@@ -1,0 +1,35 @@
+[package]
+name = "bitllm-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+gpu = ["dep:bitllm-rocm"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+log.workspace = true
+rand.workspace = true
+rayon.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+byteorder.workspace = true
+num_cpus.workspace = true
+memmap2 = "0.9"
+bitllm-tensor = { path = "../tensor" }
+bitllm-quantization = { path = "../quantization" }
+bitllm-tokenizer = { path = "../tokenizer" }
+bitllm-rocm = { path = "../rocm", optional = true }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bitlinear"
+path = "benches/bitlinear_bench.rs"
+harness = false

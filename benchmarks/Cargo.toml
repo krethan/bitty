@@ -1,0 +1,13 @@
+[package]
+name = "bitllm-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "run_benchmarks"
+path = "run_benchmarks.rs"
+
+[dependencies]
+bitllm-tensor = { path = "../crates/tensor" }
+bitllm-quantization = { path = "../crates/quantization" }

@@ -1,0 +1,21 @@
+[package]
+name = "bitllm-rocm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+rocm = ["dep:rocm-rs"]
+
+[dependencies]
+log.workspace = true
+thiserror.workspace = true
+bitllm-tensor = { path = "../tensor" }
+
+[dependencies.rocm-rs]
+version = "0.5"
+optional = true
+
+[build-dependencies]
+cc = "1"
