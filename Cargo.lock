@@ -193,6 +193,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "bitllm-benchmarks"
+version = "0.1.0"
+dependencies = [
+ "bitllm-quantization",
+ "bitllm-runtime",
+ "bitllm-tensor",
+ "chrono",
+ "clap",
+ "rand",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bitllm-distributed"
 version = "0.1.0"
 dependencies = [

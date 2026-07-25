@@ -9,6 +9,7 @@ members = [
     "crates/distributed",
     "crates/rocm",
     "crates/hip_tern",
+    "benchmarks",
 ]
 
 [workspace.package]

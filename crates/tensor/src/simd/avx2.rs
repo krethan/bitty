@@ -470,6 +470,78 @@ pub fn i8_dot_product(a: &[u8], b: &[u8], len: usize) -> i32 {
     }
 }
 
+/// True 1-bit XNOR+popcount. Each byte packs 8 binary values (+1/-1).
+/// `popcounts[i]` = number of matching bits in byte i (0..8).
+/// For a full dot product: sum = 2 * sum(popcounts) - n_bits.
+pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usize) {
+    let n_bytes = (n_bits + 7) / 8;
+    assert_eq!(a.len(), n_bytes);
+    assert_eq!(b.len(), n_bytes);
+    assert_eq!(popcounts.len(), n_bytes);
+
+    if is_x86_feature_detected!("avx2") && n_bytes >= 32 {
+        unsafe {
+            xnor_popcount_1bit_avx2(a.as_ptr(), b.as_ptr(), popcounts.as_mut_ptr(), n_bytes)
+        };
+    } else {
+        for i in 0..n_bytes {
+            popcounts[i] = (!a[i] ^ b[i]).count_ones();
+        }
+    }
+}
+
+/// AVX2 per-byte popcount using VPSHUFB lookup table + nibble masking.
+/// Stores byte-sized popcounts (0..8) widened to u32.
+#[target_feature(enable = "avx2")]
+unsafe fn xnor_popcount_1bit_avx2(
+    a: *const u8,
+    b: *const u8,
+    popcounts: *mut u32,
+    n_bytes: usize,
+) {
+    // Lookup table: low nibble popcount {0..15}
+    let lookup = _mm256_setr_epi8(
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+    );
+    let low_mask = _mm256_set1_epi8(0x0F);
+
+    let chunks = n_bytes / 32;
+
+    for i in 0..chunks {
+        let byte_idx = i * 32;
+        let va = _mm256_loadu_si256(a.add(byte_idx) as *const __m256i);
+        let vb = _mm256_loadu_si256(b.add(byte_idx) as *const __m256i);
+        // XNOR = NOT(XOR(a, b)) — matching bits become 1
+        let xnor = _mm256_andnot_si256(_mm256_xor_si256(va, vb), _mm256_set1_epi8(-1i8));
+
+        // VPSHUFB lookup: low nibble popcount
+        let lo = _mm256_and_si256(xnor, low_mask);
+        let hi = _mm256_and_si256(_mm256_srli_epi16(xnor, 4), low_mask);
+        let pop_lo = _mm256_shuffle_epi8(lookup, lo);
+        let pop_hi = _mm256_shuffle_epi8(lookup, hi);
+        let counts = _mm256_add_epi8(pop_lo, pop_hi);
+
+        // Widen each byte to u32 and store
+        let counts_lo = _mm256_unpacklo_epi8(counts, _mm256_setzero_si256());
+        let counts_hi = _mm256_unpackhi_epi8(counts, _mm256_setzero_si256());
+        let counts_0 = _mm256_unpacklo_epi16(counts_lo, _mm256_setzero_si256());
+        let counts_1 = _mm256_unpackhi_epi16(counts_lo, _mm256_setzero_si256());
+        let counts_2 = _mm256_unpacklo_epi16(counts_hi, _mm256_setzero_si256());
+        let counts_3 = _mm256_unpackhi_epi16(counts_hi, _mm256_setzero_si256());
+
+        _mm256_storeu_si256(popcounts.add(byte_idx) as *mut __m256i, counts_0);
+        _mm256_storeu_si256(popcounts.add(byte_idx + 8) as *mut __m256i, counts_1);
+        _mm256_storeu_si256(popcounts.add(byte_idx + 16) as *mut __m256i, counts_2);
+        _mm256_storeu_si256(popcounts.add(byte_idx + 24) as *mut __m256i, counts_3);
+    }
+
+    let offset = chunks * 32;
+    for i in offset..n_bytes {
+        *popcounts.add(i) = (!*a.add(i) ^ *b.add(i)).count_ones();
+    }
+}
+
 pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
     if is_x86_feature_detected!("avx2") && n >= 32 {
         unsafe { xnor_popcount_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n) };

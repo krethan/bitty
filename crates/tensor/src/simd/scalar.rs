@@ -68,6 +68,16 @@ pub fn i8_dot_product(a: &[u8], b: &[u8], len: usize) -> i32 {
     sum
 }
 
+pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usize) {
+    let n_bytes = (n_bits + 7) / 8;
+    assert_eq!(a.len(), n_bytes);
+    assert_eq!(b.len(), n_bytes);
+    assert_eq!(popcounts.len(), n_bytes);
+    for i in 0..n_bytes {
+        popcounts[i] = (!a[i] ^ b[i]).count_ones();
+    }
+}
+
 pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
     for i in 0..n {
         let byte_a = a[i / 2];

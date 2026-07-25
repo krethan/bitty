@@ -32,6 +32,6 @@ impl GpuContext {
 
 pub use bitlinear::BitLinear;
 pub use config::ModelConfig;
-pub use loader::{LlamaWeightMapper, SafeTensorsLoader, WeightTarget};
+pub use loader::{load_safetensors_weights, LlamaWeightMapper, LoadingStats, SafeTensorsLoader, WeightTarget};
 pub use model::Model;
 pub use sampler::{Sampler, SamplingStrategy};

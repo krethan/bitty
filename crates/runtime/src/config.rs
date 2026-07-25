@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -63,5 +64,63 @@ impl ModelConfig {
             rope_theta: 10000.0,
             tie_word_embeddings: false,
         }
+    }
+
+    /// Parse a HuggingFace `config.json` into a `ModelConfig`.
+    ///
+    /// HuggingFace uses different field names than our internal format:
+    /// - `num_hidden_layers` → `num_layers`
+    /// - `num_attention_heads` → `num_heads`
+    /// - `num_key_value_heads` → `num_kv_heads`
+    /// - `intermediate_size` → `intermediate_size` (same)
+    /// - `rms_norm_eps` → `norm_eps`
+    /// - `max_position_embeddings` → `max_seq_len`
+    pub fn from_huggingface_json(json: &str) -> Result<Self, String> {
+        let v: Value = serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
+
+        let get_u64 = |key: &str| -> Option<usize> {
+            v.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
+        };
+        let get_f32 = |key: &str| -> Option<f32> {
+            v.get(key).and_then(|v| v.as_f64()).map(|n| n as f32)
+        };
+        let get_bool = |key: &str| -> Option<bool> {
+            v.get(key).and_then(|v| v.as_bool())
+        };
+
+        let vocab_size = get_u64("vocab_size").unwrap_or(32000);
+        let hidden_size = get_u64("hidden_size").ok_or("missing `hidden_size`")?;
+        let num_layers = get_u64("num_hidden_layers")
+            .or_else(|| get_u64("num_layers"))
+            .ok_or("missing `num_hidden_layers`")?;
+        let num_heads = get_u64("num_attention_heads")
+            .or_else(|| get_u64("num_heads"))
+            .ok_or("missing `num_attention_heads`")?;
+        let num_kv_heads = get_u64("num_key_value_heads").map(Some).unwrap_or(None);
+        let intermediate_size = get_u64("intermediate_size")
+            .unwrap_or_else(|| hidden_size * 4);
+        let norm_eps = get_f32("rms_norm_eps")
+            .or_else(|| get_f32("layer_norm_eps"))
+            .unwrap_or(1e-5);
+        let max_seq_len = get_u64("max_position_embeddings")
+            .or_else(|| get_u64("max_seq_len"))
+            .unwrap_or(2048);
+        let rope_theta = get_f32("rope_theta")
+            .or_else(|| get_f32("rope_scaling"))
+            .unwrap_or(10000.0);
+        let tie_word_embeddings = get_bool("tie_word_embeddings").unwrap_or(false);
+
+        Ok(Self {
+            vocab_size,
+            hidden_size,
+            num_layers,
+            num_heads,
+            num_kv_heads,
+            intermediate_size,
+            norm_eps,
+            max_seq_len,
+            rope_theta,
+            tie_word_embeddings,
+        })
     }
 }

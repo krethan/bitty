@@ -1,3 +1,4 @@
+mod binary;
 mod error;
 mod init;
 pub mod simd;
@@ -5,6 +6,7 @@ mod tensor;
 mod types;
 mod view;
 
+pub use binary::BinaryTensor;
 pub use error::TensorError;
 pub use init::InitMethod;
 pub use tensor::Tensor;

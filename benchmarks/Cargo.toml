@@ -6,8 +6,14 @@ publish = false
 
 [[bin]]
 name = "run_benchmarks"
-path = "run_benchmarks.rs"
+path = "src/main.rs"
 
 [dependencies]
 bitllm-tensor = { path = "../crates/tensor" }
 bitllm-quantization = { path = "../crates/quantization" }
+bitllm-runtime = { path = "../crates/runtime" }
+rand = "0.8"
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }

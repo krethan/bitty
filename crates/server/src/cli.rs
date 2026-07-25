@@ -37,6 +37,15 @@ pub enum Commands {
         #[arg(long)]
         gguf: Option<String>,
 
+        #[arg(long)]
+        safetensors: Option<String>,
+
+        #[arg(long)]
+        config_json: Option<String>,
+
+        #[arg(long)]
+        quantize: Option<String>,
+
         #[arg(long, default_value_t = 0)]
         gpu: i32,
     },
@@ -60,6 +69,9 @@ pub async fn run() -> anyhow::Result<()> {
             tokenizer,
             config,
             gguf,
+            safetensors,
+            config_json,
+            quantize,
             gpu,
         } => {
             let device = if gpu >= 0 {
@@ -95,6 +107,63 @@ pub async fn run() -> anyhow::Result<()> {
                 );
                 let mut model = Model::new(model_config);
                 load_gguf_weights(&mut model, &loader, device);
+                (model, name)
+            } else if let Some(st_path) = &safetensors {
+                log::info!("Loading SafeTensors model from {}", st_path);
+                let loader = bitllm_runtime::SafeTensorsLoader::load(st_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to load SafeTensors: {}", e))?;
+
+                // Load config from --config-json, or look for config.json next to the .safetensors file
+                let model_config = if let Some(cj_path) = &config_json {
+                    let json = std::fs::read_to_string(cj_path)
+                        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", cj_path, e))?;
+                    ModelConfig::from_huggingface_json(&json)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?
+                } else {
+                    let config_path = std::path::Path::new(st_path)
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("config.json");
+                    if config_path.exists() {
+                        let json = std::fs::read_to_string(&config_path)
+                            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", config_path.display(), e))?;
+                        ModelConfig::from_huggingface_json(&json)
+                            .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?
+                    } else {
+                        log::warn!("No config.json found, using tiny_test defaults");
+                        ModelConfig::tiny_test()
+                    }
+                };
+
+                let name = model_name
+                    .or_else(|| {
+                        // Try to get model name from SafeTensors metadata
+                        loader.metadata().get("model_name").cloned()
+                    })
+                    .unwrap_or_else(|| "bitllm-model".to_string());
+
+                log::info!(
+                    "SafeTensors config: {} layers, {} hidden, {} heads",
+                    model_config.num_layers,
+                    model_config.hidden_size,
+                    model_config.num_heads
+                );
+
+                let mut model = Model::new(model_config.clone());
+                let stats = bitllm_runtime::load_safetensors_weights(
+                    &mut model,
+                    &loader,
+                    &model_config,
+                    quantize.as_deref(),
+                );
+                log::info!(
+                    "Loaded {} tensors, skipped {}",
+                    stats.loaded,
+                    stats.skipped.len()
+                );
+                if !stats.skipped.is_empty() {
+                    log::debug!("Skipped tensors: {:?}", stats.skipped);
+                }
                 (model, name)
             } else {
                 let model_config = match config.as_str() {
