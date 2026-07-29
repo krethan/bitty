@@ -24,7 +24,7 @@ impl GpuOps {
                 let grid_size = (n + block_size - 1) / block_size;
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel("bitllm_f32_scale"),
+                    Self::get_kernel("bitllm_f32_scale")?,
                     rocm_rs::hip::dim3 {
                         x: grid_size as u32,
                         y: 1,
@@ -74,7 +74,7 @@ impl GpuOps {
                 let grid_y = ((m + 31) / 32) as u32;
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel("bitllm_f32_matmul"),
+                    Self::get_kernel("bitllm_f32_matmul")?,
                     rocm_rs::hip::dim3 {
                         x: grid_x,
                         y: grid_y,
@@ -126,7 +126,7 @@ impl GpuOps {
                 let grid_y = ((m + 31) / 32) as u32;
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel("bitllm_f32_matmul_transB"),
+                    Self::get_kernel("bitllm_f32_matmul_transB")?,
                     rocm_rs::hip::dim3 {
                         x: grid_x,
                         y: grid_y,
@@ -174,7 +174,7 @@ impl GpuOps {
                 let shared_mem = block_size as usize * std::mem::size_of::<f32>();
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel("bitllm_softmax"),
+                    Self::get_kernel("bitllm_softmax")?,
                     rocm_rs::hip::dim3 {
                         x: rows as u32,
                         y: 1,
@@ -223,7 +223,7 @@ impl GpuOps {
                 let grid_size = ((total + 255) / 256) as u32;
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel("bitllm_rope"),
+                    Self::get_kernel("bitllm_rope")?,
                     rocm_rs::hip::dim3 {
                         x: grid_size,
                         y: 1,
@@ -273,7 +273,7 @@ impl GpuOps {
                 let grid_size = (n + block_size - 1) / block_size;
 
                 let err = rocm_rs::hip::hipLaunchKernel(
-                    Self::get_kernel(name),
+                    Self::get_kernel(name)?,
                     rocm_rs::hip::dim3 {
                         x: grid_size as u32,
                         y: 1,
@@ -310,15 +310,21 @@ impl GpuOps {
     }
 
     #[cfg(feature = "rocm")]
-    unsafe fn get_kernel(name: &str) -> rocm_rs::hip::hipFunction_t {
+    unsafe fn get_kernel(name: &str) -> Result<rocm_rs::hip::hipFunction_t> {
         use std::ffi::CString;
         let c_name = CString::new(name).unwrap();
         let mut func: rocm_rs::hip::hipFunction_t = std::ptr::null_mut();
-        rocm_rs::hip::hipModuleGetFunction(
+        let err = rocm_rs::hip::hipModuleGetFunction(
             &mut func,
             rocm_rs::hip::hipModule_t::std_module(),
             c_name.as_ptr(),
         );
-        func
+        if err != rocm_rs::hip::hipError_t::hipSuccess || func.is_null() {
+            return Err(RocmError::KernelLaunchFailed(format!(
+                "Failed to get kernel '{}': {:?}",
+                name, err
+            )));
+        }
+        Ok(func)
     }
 }

@@ -3,25 +3,31 @@ use std::time::Instant;
 
 use bitllm_quantization::absmax::{absmax_dequantize, absmax_quantize};
 use bitllm_quantization::group::GroupQuantizer;
-use bitllm_quantization::scheme::QuantConfig;
+use bitllm_quantization::scheme::{QuantConfig, QuantizedTensor};
 use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
 use bitllm_tensor::{BinaryTensor, DType, Tensor};
 
 use crate::helpers::{print_throughput_full, time_iters};
 
+// ── Constants ──────────────────────────────────────────────────────────
+const BENCH_SIZES: [usize; 4] = [128, 256, 512, 1024];
+const PIPELINE_SIZES: [usize; 2] = [512, 1024];
+const SCORE_SIZE: usize = 1024;
+const N_SCORE_TRIALS: usize = 3;
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
-fn int8_output_bytes(q: &bitllm_quantization::scheme::QuantizedTensor) -> usize {
+fn int8_output_bytes(q: &QuantizedTensor) -> usize {
     q.data.len() + q.scales.len() * 4
 }
 
-fn int4_output_bytes(q: &bitllm_quantization::scheme::QuantizedTensor) -> usize {
+fn int4_output_bytes(q: &QuantizedTensor) -> usize {
     q.data.len()
         + q.scales.len() * 4
         + q.zeros.as_ref().map_or(0, |z| z.len() * 4)
 }
 
-fn ternary_output_bytes(q: &bitllm_quantization::scheme::QuantizedTensor) -> usize {
+fn ternary_output_bytes(q: &QuantizedTensor) -> usize {
     q.data.len() + q.scales.len() * 4
 }
 
@@ -154,12 +160,12 @@ pub fn bench_quantization_throughput() {
     println!("\n=== Quantization Throughput ===");
     println!("  (memory-bound: higher GB/s = better)\n");
 
-    for &size in &[128, 256, 512, 1024] {
+    for &size in &BENCH_SIZES {
         let n = size * size;
         let fp32_bytes = n * 4;
         let iters = if size <= 256 { 50 } else { 10 };
 
-        println!("  {}x{} ({} KB):", size, size, fp32_bytes / 1024);
+        println!("  {size}x{size} ({} KB):", fp32_bytes / 1024);
 
         // INT8 quantize + dequantize
         let q_int8 = absmax_quantize(&Tensor::random(&[size, size], DType::F32), &QuantConfig::int8());
@@ -221,12 +227,12 @@ pub fn bench_quantization_throughput() {
     // ── End-to-end binary pipeline (most interesting metric) ─────────
 
     println!("  --- Binary pipeline (pack + expand + matmul) ---\n");
-    for &size in &[512, 1024] {
+    for &size in &PIPELINE_SIZES {
         let iters = if size <= 512 { 10 } else { 5 };
         let (t_pack, t_expand, t_matmul) = bench_binary_pipeline(size, iters);
         let total = t_pack + t_expand + t_matmul;
 
-        println!("  {}x{} pipeline:", size, size);
+        println!("  {size}x{size} pipeline:");
         println!(
             "    Pack (FP32 -> 1-bit):      {:8.3} ms",
             t_pack * 1000.0
@@ -252,9 +258,9 @@ pub fn bench_quantization_throughput() {
     println!("  Score = Compression x CosSim / EncodeTime(ms)");
     println!("  Higher = better (fast conversion + high compression + high fidelity)\n");
 
-    let score_size = 1024;
-    let n_trials = 3;
+    let score_size = SCORE_SIZE;
     let fp32_bytes = score_size * score_size * 4;
+    let n_trials = N_SCORE_TRIALS;
 
     // Gather data: (name, compression_ratio, cos_sim, encode_time_ms)
     let mut entries: Vec<(&str, f64, f64, f64)> = Vec::new();
@@ -374,13 +380,18 @@ pub fn bench_quantization_throughput() {
     println!("  the modest cosine similarity loss.\n");
 }
 
+/// Computes the cosine similarity between two slices of `f32` values.
+/// Returns `0.0` if either slice is empty or has a norm of `0.0`.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| *x as f64 * *y as f64).sum();
+    let norm_a: f64 = a.iter().map(|x| *x as f64 * *x as f64).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|y| *y as f64 * *y as f64).sum::<f64>().sqrt();
     if norm_a == 0.0 || norm_b == 0.0 {
         0.0
     } else {
-        dot / (norm_a * norm_b)
+        (dot / (norm_a * norm_b)) as f32
     }
 }

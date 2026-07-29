@@ -126,36 +126,29 @@ impl GpuContext {
         let hidden = *input.shape().last().unwrap_or(&n);
         let rows = n / hidden;
 
-        let gin = self.upload(input)?;
-        let gw = self.upload(weight)?;
+        let in_slice = if input.dtype() == DType::F32 {
+            input.as_f32_slice()
+        } else {
+            let t = input.to_f32();
+            return self.rms_norm_with_slice(t.as_f32_slice(), weight, hidden, rows, eps);
+        };
+        self.rms_norm_with_slice(in_slice, weight, hidden, rows, eps)
+    }
 
-        let gemul = GpuBuffer::new(n * 4).map_err(|e| format!("GPU alloc failed: {}", e))?;
-        GpuOps::f32_mul(&gin, &gw, &gemul, n)
-            .map_err(|e| format!("GPU rms_norm mul failed: {}", e))?;
+    fn rms_norm_with_slice(&self, in_slice: &[f32], weight: &Tensor, hidden: usize, rows: usize, eps: f32) -> Result<Tensor, String> {
+        let w_slice = weight.as_f32_slice();
 
-        let _gsum = GpuBuffer::new(rows * 4).map_err(|e| format!("GPU alloc failed: {}", e))?;
-        // For rms_norm, we need row-wise sum of squares, then scale.
-        // GPU doesn't have a row-sum kernel yet, so compute sum-of-squares on host
-        // from the multiplied result, then apply scale on GPU.
-        let mul_host = self.download(&gemul, input.shape(), DType::F32)?;
-        let mul_slice = mul_host.as_f32_slice();
-
-        let mut scales = Vec::with_capacity(rows);
-        for i in 0..rows {
-            let row = &mul_slice[i * hidden..][..hidden];
-            let sum_sq: f32 = row.iter().map(|v| v * v).sum();
-            let rms = (sum_sq / hidden as f32 + eps).sqrt();
-            scales.push(1.0 / rms);
-        }
-
-        let mut result = Tensor::zeros(input.shape(), DType::F32);
+        let mut result = Tensor::zeros(&[rows, hidden], DType::F32);
         let out_slice = result.as_f32_slice_mut();
+
         for i in 0..rows {
-            let src = &mul_slice[i * hidden..][..hidden];
-            let dst = &mut out_slice[i * hidden..][..hidden];
-            let scale = scales[i];
+            let row = &in_slice[i * hidden..][..hidden];
+            let sum_sq: f32 = row.iter().map(|v| v * v).sum();
+            let inv_rms = 1.0 / (sum_sq / hidden as f32 + eps).sqrt();
+            let w_row = &w_slice[..hidden];
+            let out_row = &mut out_slice[i * hidden..][..hidden];
             for j in 0..hidden {
-                dst[j] = src[j] * scale;
+                out_row[j] = row[j] * w_row[j] * inv_rms;
             }
         }
 

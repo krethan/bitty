@@ -62,7 +62,7 @@ impl GgmlType {
             Self::F32 => 4,
             Self::F16 | Self::BF16 | Self::I16 => 2,
             Self::Q4_0 | Self::Q4_1 | Self::Q5_0 | Self::Q5_1 => 32,
-            Self::Q8_0 | Self::Q8_1 | Self::I8 => 16,
+            Self::Q8_0 | Self::Q8_1 | Self::I8 => 32,
             Self::Q2K => 32,
             Self::Q3K => 32,
             Self::Q4K => 32,
@@ -492,15 +492,17 @@ impl GgufLoader {
                 let floats: Vec<f32> = match info.ggml_type {
                     GgmlType::I8 => (0..n).map(|i| raw[i] as i8 as f32).collect(),
                     GgmlType::Q8_0 => {
-                        let blocks = n.div_ceil(16);
+                        // GGML Q8_0: 2-byte f16 scale + 32 int8 values = 34 bytes per block
+                        let block_bytes = 2 + 32;
+                        let blocks = n.div_ceil(32);
                         let mut result = Vec::with_capacity(n);
                         for b in 0..blocks {
-                            let base = b * (1 + 16);
-                            if base + 17 > raw.len() {
+                            let base = b * block_bytes;
+                            if base + block_bytes > raw.len() {
                                 break;
                             }
-                            let scale = raw[base] as i8 as f32;
-                            let block = &raw[base + 1..base + 17];
+                            let scale = f16_to_f32(u16::from_le_bytes([raw[base], raw[base + 1]]));
+                            let block = &raw[base + 2..base + 34];
                             for &byte in block {
                                 if result.len() >= n {
                                     break;

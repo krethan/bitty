@@ -30,13 +30,30 @@ impl Tensor {
     pub fn from_slice(data: &[f32], shape: &[usize]) -> Self {
         let num = shape.iter().product::<usize>();
         assert_eq!(data.len(), num);
-        let mut t = Self::new(shape, DType::F32);
-        let mut raw = Vec::with_capacity(num * 4);
-        for v in data {
-            raw.extend_from_slice(&v.to_le_bytes());
+        let bytes = num * 4;
+        let mut raw = vec![0u8; bytes];
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr() as *const u8, raw.as_mut_ptr(), bytes);
         }
-        t.data = raw;
-        t
+        Self {
+            data: raw,
+            shape: shape.to_vec(),
+            dtype: DType::F32,
+            device: Device::Cpu,
+        }
+    }
+
+    /// Try to create a f32 tensor from a slice, returning an error on mismatch.
+    pub fn try_from_slice(data: &[f32], shape: &[usize]) -> Result<Self, TensorError> {
+        let num = shape.iter().product::<usize>();
+        if data.len() != num {
+            return Err(TensorError::ShapeMismatch(format!(
+                "from_slice: data len {} != shape product {}",
+                data.len(),
+                num
+            )));
+        }
+        Ok(Self::from_slice(data, shape))
     }
 
     pub fn random(shape: &[usize], dtype: DType) -> Self {
@@ -65,9 +82,9 @@ impl Tensor {
 
     pub fn ones(shape: &[usize], dtype: DType) -> Self {
         let mut t = Self::new(shape, DType::F32);
-        let n = t.num_elements();
-        for i in 0..n {
-            t.set_flat_f32(i, 1.0);
+        let out = t.as_f32_slice_mut();
+        for v in out.iter_mut() {
+            *v = 1.0;
         }
         if dtype != DType::F32 {
             t = t.to_dtype(dtype);
@@ -118,6 +135,32 @@ impl Tensor {
         }
     }
 
+    /// Reinterpret the tensor's shape without cloning the data buffer.
+    /// Panics on element count mismatch.
+    pub fn reshape_owned(mut self, new_shape: &[usize]) -> Self {
+        let new_num = new_shape.iter().product::<usize>();
+        assert_eq!(new_num, self.num_elements());
+        self.shape = new_shape.to_vec();
+        self
+    }
+
+    pub fn try_reshape(&self, new_shape: &[usize]) -> Result<Self, TensorError> {
+        let new_num = new_shape.iter().product::<usize>();
+        if new_num != self.num_elements() {
+            return Err(TensorError::ShapeMismatch(format!(
+                "reshape: new shape product {} != current {}",
+                new_num,
+                self.num_elements()
+            )));
+        }
+        Ok(Self {
+            data: self.data.clone(),
+            shape: new_shape.to_vec(),
+            dtype: self.dtype,
+            device: self.device,
+        })
+    }
+
     pub fn transpose(&self) -> Self {
         assert_eq!(self.ndim(), 2);
         let rows = self.shape[0];
@@ -133,6 +176,29 @@ impl Tensor {
             result = result.to_dtype(self.dtype);
         }
         result
+    }
+
+    /// Returns a lazy transposed view without allocating a new tensor.
+    pub fn transpose_view(&self) -> crate::view::TensorView<'_> {
+        assert_eq!(self.ndim(), 2, "transpose_view requires a 2d tensor");
+        let rows = self.shape[0];
+        let cols = self.shape[1];
+        crate::view::TensorView::new(
+            self,
+            0,
+            vec![cols, rows],
+            vec![1, cols], // row-major: stride for dim0=cols, stride for dim1=1
+        )
+    }
+
+    pub fn try_transpose(&self) -> Result<Self, TensorError> {
+        if self.ndim() != 2 {
+            return Err(TensorError::ShapeMismatch(format!(
+                "transpose: expected 2d tensor, got {}d",
+                self.ndim()
+            )));
+        }
+        Ok(self.transpose())
     }
 
     pub fn flatten(&self) -> Self {
@@ -246,10 +312,39 @@ impl Tensor {
     }
 
     pub fn to_f32(&self) -> Self {
+        if self.dtype == DType::F32 {
+            return self.clone();
+        }
         let n = self.num_elements();
         let mut result = Self::new(&self.shape, DType::F32);
-        for i in 0..n {
-            result.set_flat_f32(i, self.get_flat_f32(i));
+        let out = result.as_f32_slice_mut();
+        match self.dtype {
+            DType::F16 => {
+                for i in 0..n {
+                    out[i] = f16_to_f32(self.u16_at(i));
+                }
+            }
+            DType::BF16 => {
+                for i in 0..n {
+                    out[i] = bf16_to_f32(self.u16_at(i));
+                }
+            }
+            DType::INT8 => {
+                for i in 0..n {
+                    out[i] = self.data[i] as i8 as f32 / 127.0;
+                }
+            }
+            DType::INT4 => {
+                for i in 0..n {
+                    out[i] = self.get_flat_f32(i);
+                }
+            }
+            DType::BIT1 => {
+                for i in 0..n {
+                    out[i] = self.get_flat_f32(i);
+                }
+            }
+            DType::F32 => unreachable!(),
         }
         result
     }
@@ -342,30 +437,51 @@ impl Tensor {
         if self.shape != other.shape {
             return Err(TensorError::ShapeMismatch("shape mismatch in add".into()));
         }
-        let left = self.to_f32();
-        let right = other.to_f32();
         let mut result = Self::new(&self.shape, DType::F32);
         {
-            let a = left.as_f32_slice();
-            let b = right.as_f32_slice();
             let out = result.as_f32_slice_mut();
-            simd::f32_add(a, b, out);
+            if self.dtype == DType::F32 && other.dtype == DType::F32 {
+                simd::f32_add(self.as_f32_slice(), other.as_f32_slice(), out);
+            } else {
+                let left = self.to_f32();
+                let right = other.to_f32();
+                simd::f32_add(left.as_f32_slice(), right.as_f32_slice(), out);
+            }
         }
         Ok(result)
+    }
+
+    pub fn add_assign(&mut self, other: &Self) -> Result<(), TensorError> {
+        if self.shape != other.shape {
+            return Err(TensorError::ShapeMismatch("shape mismatch in add".into()));
+        }
+        if self.dtype == DType::F32 && other.dtype == DType::F32 {
+            simd::f32_axpy(other.as_f32_slice(), 1.0, self.as_f32_slice_mut());
+        } else {
+            let self_f32 = self.to_f32();
+            let other_f32 = other.to_f32();
+            let out = self.as_f32_slice_mut();
+            for i in 0..out.len() {
+                out[i] = self_f32.as_f32_slice()[i] + other_f32.as_f32_slice()[i];
+            }
+        }
+        Ok(())
     }
 
     pub fn sub(&self, other: &Self) -> Result<Self, TensorError> {
         if self.shape != other.shape {
             return Err(TensorError::ShapeMismatch("shape mismatch in sub".into()));
         }
-        let left = self.to_f32();
-        let right = other.to_f32();
         let mut result = Self::new(&self.shape, DType::F32);
         {
-            let a = left.as_f32_slice();
-            let b = right.as_f32_slice();
             let out = result.as_f32_slice_mut();
-            simd::f32_sub(a, b, out);
+            if self.dtype == DType::F32 && other.dtype == DType::F32 {
+                simd::f32_sub(self.as_f32_slice(), other.as_f32_slice(), out);
+            } else {
+                let left = self.to_f32();
+                let right = other.to_f32();
+                simd::f32_sub(left.as_f32_slice(), right.as_f32_slice(), out);
+            }
         }
         Ok(result)
     }
@@ -374,14 +490,16 @@ impl Tensor {
         if self.shape != other.shape {
             return Err(TensorError::ShapeMismatch("shape mismatch in mul".into()));
         }
-        let left = self.to_f32();
-        let right = other.to_f32();
         let mut result = Self::new(&self.shape, DType::F32);
         {
-            let a = left.as_f32_slice();
-            let b = right.as_f32_slice();
             let out = result.as_f32_slice_mut();
-            simd::f32_mul(a, b, out);
+            if self.dtype == DType::F32 && other.dtype == DType::F32 {
+                simd::f32_mul(self.as_f32_slice(), other.as_f32_slice(), out);
+            } else {
+                let left = self.to_f32();
+                let right = other.to_f32();
+                simd::f32_mul(left.as_f32_slice(), right.as_f32_slice(), out);
+            }
         }
         Ok(result)
     }
@@ -401,23 +519,38 @@ impl Tensor {
         let m = self.shape[0];
         let k = self.shape[1];
         let n = rhs.shape[1];
-        let left = self.to_f32();
-        let right = rhs.to_f32();
 
         let mut result = Self::new(&[m, n], DType::F32);
-
-        let right_t = right.transpose();
-
-        let a_slice = left.as_f32_slice();
-        let bt_slice = right_t.as_f32_slice();
         let out_slice = result.as_f32_slice_mut();
+
+        let a_owned;
+        let b_owned;
+        let a_slice = if self.dtype == DType::F32 {
+            self.as_f32_slice()
+        } else {
+            a_owned = self.to_f32();
+            a_owned.as_f32_slice()
+        };
+        let b_slice = if rhs.dtype == DType::F32 {
+            rhs.as_f32_slice()
+        } else {
+            b_owned = rhs.to_f32();
+            b_owned.as_f32_slice()
+        };
 
         use rayon::slice::ParallelSliceMut;
         out_slice
             .par_chunks_mut(n)
             .enumerate()
             .for_each(|(i, out_row)| {
-                simd::f32_matmul_row(&a_slice[i * k..(i + 1) * k], bt_slice, out_row, k, n);
+                let a_row = &a_slice[i * k..(i + 1) * k];
+                for j in 0..n {
+                    let mut sum = 0.0f32;
+                    for t in 0..k {
+                        sum += a_row[t] * b_slice[t * n + j];
+                    }
+                    out_row[j] = sum;
+                }
             });
 
         Ok(result)
@@ -427,7 +560,11 @@ impl Tensor {
     /// Panics if dtype is not F32.
     pub fn as_f32_slice(&self) -> &[f32] {
         assert_eq!(self.dtype, DType::F32, "as_f32_slice requires F32 dtype");
-        // SAFETY: we trust the layout is Vec<u8> of aligned f32s
+        assert_eq!(
+            self.data.as_ptr() as usize % std::mem::align_of::<f32>(),
+            0,
+            "as_f32_slice requires f32 alignment"
+        );
         unsafe { std::slice::from_raw_parts(self.data.as_ptr() as *const f32, self.data.len() / 4) }
     }
 
@@ -436,6 +573,11 @@ impl Tensor {
             self.dtype,
             DType::F32,
             "as_f32_slice_mut requires F32 dtype"
+        );
+        assert_eq!(
+            self.data.as_ptr() as usize % std::mem::align_of::<f32>(),
+            0,
+            "as_f32_slice_mut requires f32 alignment"
         );
         unsafe {
             std::slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut f32, self.data.len() / 4)
@@ -486,8 +628,9 @@ pub fn f16_to_f32(val: u16) -> f32 {
 
 pub fn f32_to_bf16(val: f32) -> u16 {
     let bits = val.to_bits();
-    let rounding = ((bits >> 16) & 1) + 0x7fff;
-    ((bits + rounding) >> 16) as u16
+    let rounding = ((bits >> 16) & 1).wrapping_add(0x7fff);
+    let rounded = bits.wrapping_add(rounding);
+    (rounded >> 16) as u16
 }
 
 pub fn bf16_to_f32(val: u16) -> f32 {

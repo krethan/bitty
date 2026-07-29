@@ -3,6 +3,34 @@ use crate::layers::Linear;
 use crate::GpuContext;
 use bitllm_tensor::simd;
 use bitllm_tensor::{DType, Tensor};
+use std::cell::RefCell;
+
+
+/// Precomputed RoPE cos/sin table for efficient lookups.
+pub struct RoPECache {
+    pub cos: Vec<f32>,
+    pub sin: Vec<f32>,
+    pub head_dim: usize,
+    pub max_seq_len: usize,
+    pub theta: f32,
+}
+
+impl RoPECache {
+    pub fn new(max_seq_len: usize, head_dim: usize, theta: f32) -> Self {
+        let half = head_dim / 2;
+        let mut cos = vec![0.0f32; max_seq_len * half];
+        let mut sin = vec![0.0f32; max_seq_len * half];
+        for pos in 0..max_seq_len {
+            for i in 0..half {
+                let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+                let angle = pos as f32 * freq;
+                cos[pos * half + i] = angle.cos();
+                sin[pos * half + i] = angle.sin();
+            }
+        }
+        Self { cos, sin, head_dim, max_seq_len, theta }
+    }
+}
 
 pub struct KvCache {
     pub k: Vec<Tensor>,
@@ -28,22 +56,23 @@ impl KvCache {
 
     pub fn update(&mut self, layer_idx: usize, new_k: &Tensor, new_v: &Tensor, position: usize) {
         let num_heads = new_k.shape()[0];
+        let seq_len = new_k.shape()[1];
         let head_dim = new_k.shape()[2];
         let cache_seq_len = self.k[layer_idx].shape()[1];
 
-        for h in 0..num_heads {
-            for d in 0..head_dim {
-                let val_k = new_k.get_flat_f32(h * head_dim + d);
-                self.k[layer_idx].set_flat_f32(
-                    h * cache_seq_len * head_dim + position * head_dim + d,
-                    val_k,
-                );
+        let k_data = new_k.as_f32_slice();
+        let v_data = new_v.as_f32_slice();
+        let cache_k = self.k[layer_idx].as_f32_slice_mut();
+        let cache_v = self.v[layer_idx].as_f32_slice_mut();
 
-                let val_v = new_v.get_flat_f32(h * head_dim + d);
-                self.v[layer_idx].set_flat_f32(
-                    h * cache_seq_len * head_dim + position * head_dim + d,
-                    val_v,
-                );
+        for h in 0..num_heads {
+            for pos in 0..seq_len {
+                let src_base = h * seq_len * head_dim + pos * head_dim;
+                let dst_base = h * cache_seq_len * head_dim + (position + pos) * head_dim;
+                cache_k[dst_base..dst_base + head_dim]
+                    .copy_from_slice(&k_data[src_base..src_base + head_dim]);
+                cache_v[dst_base..dst_base + head_dim]
+                    .copy_from_slice(&v_data[src_base..src_base + head_dim]);
             }
         }
     }
@@ -52,25 +81,12 @@ impl KvCache {
         (&self.k[layer_idx], &self.v[layer_idx])
     }
 
-    pub fn get_kv_used(&self, layer_idx: usize) -> (Tensor, Tensor) {
+    /// Returns references to the KV cache tensors and the number of
+    /// positions that are actually populated.  This avoids copying the
+    /// entire cache on every attention call.
+    pub fn get_kv_used(&self, layer_idx: usize) -> (&Tensor, &Tensor, usize) {
         let kv_len = self.seq_len.max(1);
-        let num_heads = self.k[layer_idx].shape()[0];
-        let head_dim = self.k[layer_idx].shape()[2];
-        let mut k_out = Tensor::zeros(&[num_heads, kv_len, head_dim], DType::F32);
-        let mut v_out = Tensor::zeros(&[num_heads, kv_len, head_dim], DType::F32);
-
-        for h in 0..num_heads {
-            for pos in 0..kv_len {
-                for d in 0..head_dim {
-                    let src_idx = h * self.k[layer_idx].shape()[1] * head_dim + pos * head_dim + d;
-                    let dst_idx = h * kv_len * head_dim + pos * head_dim + d;
-                    k_out.set_flat_f32(dst_idx, self.k[layer_idx].get_flat_f32(src_idx));
-                    v_out.set_flat_f32(dst_idx, self.v[layer_idx].get_flat_f32(src_idx));
-                }
-            }
-        }
-
-        (k_out, v_out)
+        (&self.k[layer_idx], &self.v[layer_idx], kv_len)
     }
 
     pub fn get_seq_len(&self) -> usize {
@@ -88,6 +104,8 @@ pub struct Attention {
     pub v_proj: Linear,
     pub o_proj: Linear,
     pub config: ModelConfig,
+    scores: RefCell<Vec<f32>>,
+    acc: RefCell<Vec<f32>>,
 }
 
 impl Attention {
@@ -98,12 +116,16 @@ impl Attention {
         o_proj: Linear,
         config: ModelConfig,
     ) -> Self {
+        let max_seq_len = config.max_seq_len;
+        let head_dim = config.head_dim();
         Self {
             q_proj,
             k_proj,
             v_proj,
             o_proj,
             config,
+            scores: RefCell::new(Vec::with_capacity(max_seq_len)),
+            acc: RefCell::new(Vec::with_capacity(head_dim)),
         }
     }
 
@@ -125,6 +147,18 @@ impl Attention {
         position: usize,
         gpu: Option<&GpuContext>,
     ) -> Tensor {
+        self.forward_gpu_with_rope_cache(input, cache, layer_idx, position, gpu, None)
+    }
+
+    pub fn forward_gpu_with_rope_cache(
+        &self,
+        input: &Tensor,
+        mut cache: Option<&mut KvCache>,
+        layer_idx: usize,
+        position: usize,
+        gpu: Option<&GpuContext>,
+        rope_cache: Option<&RoPECache>,
+    ) -> Tensor {
         let seq_len = input.shape()[0];
         let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
@@ -137,7 +171,7 @@ impl Attention {
 
         let mut q_reshaped = reshape_for_attention(&q, num_heads, head_dim);
         let mut k_reshaped = reshape_for_attention(&k, num_kv_heads, head_dim);
-        let mut v_reshaped = reshape_for_attention(&v, num_kv_heads, head_dim);
+        let v_reshaped = reshape_for_attention(&v, num_kv_heads, head_dim);
 
         gpu_rope(
             &mut q_reshaped,
@@ -146,41 +180,59 @@ impl Attention {
             head_dim,
             self.config.rope_theta,
             gpu,
+            rope_cache,
         );
 
-        if let Some(cache) = cache {
-            cache.update(layer_idx, &k_reshaped, &v_reshaped, position);
-            let (used_k, used_v) = cache.get_kv_used(layer_idx);
-            k_reshaped = used_k;
-            v_reshaped = used_v;
+        if let Some(c) = cache.as_mut() {
+            c.update(layer_idx, &k_reshaped, &v_reshaped, position);
+        }
+
+        let (k_ref, v_ref, kv_seq_len) = match cache.as_ref() {
+            Some(c) => c.get_kv_used(layer_idx),
+            None => (&k_reshaped, &v_reshaped, k_reshaped.shape()[1]),
+        };
+
+        // Ensure scratch buffers are large enough
+        let mut scores_buf = self.scores.borrow_mut();
+        let mut acc_buf = self.acc.borrow_mut();
+        if scores_buf.len() < kv_seq_len {
+            scores_buf.resize(kv_seq_len, 0.0);
+        }
+        if acc_buf.len() < head_dim {
+            acc_buf.resize(head_dim, 0.0);
         }
 
         let output = scaled_dot_product_attention(
             &q_reshaped,
-            &k_reshaped,
-            &v_reshaped,
+            k_ref,
+            v_ref,
             num_heads,
             num_kv_heads,
             head_dim,
             seq_len,
+            kv_seq_len,
+            &mut scores_buf[..kv_seq_len],
+            &mut acc_buf[..head_dim],
         );
 
-        let output_flat = output.flatten();
+        let reshaped = output.reshape_owned(&[seq_len, hidden_size]);
         self.o_proj
-            .forward_gpu(&output_flat.reshape(&[seq_len, hidden_size]), gpu)
+            .forward_gpu(&reshaped, gpu)
     }
 }
 
 fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim: usize) -> Tensor {
     let seq_len = tensor.shape()[0];
     let mut result = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
+    let src_slice = tensor.as_f32_slice();
+    let dst_slice = result.as_f32_slice_mut();
 
     for h in 0..num_heads {
         for pos in 0..seq_len {
-            for d in 0..head_dim {
-                let val = tensor.get_flat_f32(pos * num_heads * head_dim + h * head_dim + d);
-                result.set_flat_f32(h * seq_len * head_dim + pos * head_dim + d, val);
-            }
+            let src_base = pos * num_heads * head_dim + h * head_dim;
+            let dst_base = h * seq_len * head_dim + pos * head_dim;
+            dst_slice[dst_base..dst_base + head_dim]
+                .copy_from_slice(&src_slice[src_base..src_base + head_dim]);
         }
     }
 
@@ -195,8 +247,11 @@ fn scaled_dot_product_attention(
     num_kv_heads: usize,
     head_dim: usize,
     seq_len: usize,
+    kv_seq_len: usize,
+    scores: &mut [f32],
+    acc: &mut [f32],
 ) -> Tensor {
-    let kv_seq_len = k.shape()[1];
+    let kv_stride = k.shape()[1];
     let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
 
@@ -212,36 +267,30 @@ fn scaled_dot_product_attention(
         for pos_q in 0..seq_len {
             let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
-            let mut scores: Vec<f32> = Vec::with_capacity(kv_seq_len);
             let mut max_val: f32 = f32::NEG_INFINITY;
 
             for pos_k in 0..kv_seq_len {
-                let k_row = &k_slice[kv_h * kv_seq_len * head_dim + pos_k * head_dim..][..head_dim];
+                let k_row = &k_slice[kv_h * kv_stride * head_dim + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = dot / scale;
-                scores.push(score);
+                scores[pos_k] = score;
                 if score > max_val {
                     max_val = score;
                 }
             }
 
-            let mut exp_scores = vec![0.0f32; kv_seq_len];
-            simd::f32_exp(&scores, &mut exp_scores);
-            let sum_exp: f32 = simd::f32_sum(&exp_scores);
-            let inv_sum = 1.0 / sum_exp;
+            simd::f32_add_scalar_inplace(&mut scores[..kv_seq_len], -max_val);
+            simd::f32_exp_inplace(&mut scores[..kv_seq_len]);
+            let sum_exp: f32 = simd::f32_sum(&scores[..kv_seq_len]);
+            simd::f32_scale_inplace(&mut scores[..kv_seq_len], 1.0 / sum_exp);
 
-            for s in exp_scores.iter_mut() {
-                *s *= inv_sum;
+            acc[..head_dim].fill(0.0);
+            for (pos_k, score) in scores[..kv_seq_len].iter().enumerate() {
+                let v_row = &v_slice[kv_h * kv_stride * head_dim + pos_k * head_dim..][..head_dim];
+                simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
             }
-
-            for d in 0..head_dim {
-                let mut acc = 0.0f32;
-                for (pos_k, score) in exp_scores.iter().enumerate() {
-                    let v_val = v_slice[kv_h * kv_seq_len * head_dim + pos_k * head_dim + d];
-                    acc += score * v_val;
-                }
-                out_slice[h * seq_len * head_dim + pos_q * head_dim + d] = acc;
-            }
+            let out_row = &mut out_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
+            out_row.copy_from_slice(&acc[..head_dim]);
         }
     }
 
@@ -249,27 +298,50 @@ fn scaled_dot_product_attention(
 }
 
 pub fn apply_rotary_emb(x: &Tensor, position: usize, head_dim: usize, theta: f32) -> Tensor {
+    apply_rotary_emb_with_cache(x, position, head_dim, theta, None)
+}
+
+pub fn apply_rotary_emb_with_cache(
+    x: &Tensor,
+    position: usize,
+    head_dim: usize,
+    theta: f32,
+    cache: Option<&RoPECache>,
+) -> Tensor {
     let seq_len = x.shape()[1];
     let num_heads = x.shape()[0];
-    let mut result = x.clone();
+    let half = head_dim / 2;
 
-    for i in 0..(head_dim / 2) {
-        let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+    let mut result = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
+    let x_slice = x.as_f32_slice();
+    let out_slice = result.as_f32_slice_mut();
 
-        for h in 0..num_heads {
-            for pos in 0..seq_len {
-                let angle = (position + pos) as f32 * freq;
-                let cos_val = angle.cos();
-                let sin_val = angle.sin();
+    let (cos_table, sin_table) = cache
+        .filter(|c| c.head_dim == head_dim && c.theta == theta)
+        .map(|c| (&c.cos[..], &c.sin[..]))
+        .unwrap_or((&[], &[]));
 
-                let idx_even = h * seq_len * head_dim + pos * head_dim + 2 * i;
-                let idx_odd = h * seq_len * head_dim + pos * head_dim + 2 * i + 1;
+    for h in 0..num_heads {
+        for pos in 0..seq_len {
+            let base = h * seq_len * head_dim + pos * head_dim;
+            for i in 0..half {
+                let (cos_val, sin_val) = if !cos_table.is_empty() {
+                    let idx = (position + pos) * half + i;
+                    (cos_table[idx], sin_table[idx])
+                } else {
+                    let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+                    let angle = (position + pos) as f32 * freq;
+                    (angle.cos(), angle.sin())
+                };
 
-                let x_even = x.get_flat_f32(idx_even);
-                let x_odd = x.get_flat_f32(idx_odd);
+                let idx_even = base + 2 * i;
+                let idx_odd = base + 2 * i + 1;
 
-                result.set_flat_f32(idx_even, x_even * cos_val - x_odd * sin_val);
-                result.set_flat_f32(idx_odd, x_even * sin_val + x_odd * cos_val);
+                let x_even = x_slice[idx_even];
+                let x_odd = x_slice[idx_odd];
+
+                out_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
+                out_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
             }
         }
     }
@@ -284,31 +356,54 @@ pub fn apply_rotary_emb_inplace(
     head_dim: usize,
     theta: f32,
 ) {
-    apply_rotary_inplace_inner(q, position, head_dim, theta);
-    apply_rotary_inplace_inner(k, position, head_dim, theta);
+    apply_rotary_inplace_inner(q, position, head_dim, theta, None);
+    apply_rotary_inplace_inner(k, position, head_dim, theta, None);
 }
 
-fn apply_rotary_inplace_inner(x: &mut Tensor, position: usize, head_dim: usize, theta: f32) {
+pub fn apply_rotary_emb_inplace_with_cache(
+    q: &mut Tensor,
+    k: &mut Tensor,
+    position: usize,
+    head_dim: usize,
+    theta: f32,
+    cache: Option<&RoPECache>,
+) {
+    apply_rotary_inplace_inner(q, position, head_dim, theta, cache);
+    apply_rotary_inplace_inner(k, position, head_dim, theta, cache);
+}
+
+fn apply_rotary_inplace_inner(x: &mut Tensor, position: usize, head_dim: usize, theta: f32, cache: Option<&RoPECache>) {
     let seq_len = x.shape()[1];
     let num_heads = x.shape()[0];
+    let half = head_dim / 2;
+    let x_slice = x.as_f32_slice_mut();
 
-    for i in 0..(head_dim / 2) {
-        let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+    let (cos_table, sin_table) = cache
+        .filter(|c| c.head_dim == head_dim && c.theta == theta)
+        .map(|c| (&c.cos[..], &c.sin[..]))
+        .unwrap_or((&[], &[]));
 
-        for h in 0..num_heads {
-            for pos in 0..seq_len {
-                let angle = (position + pos) as f32 * freq;
-                let cos_val = angle.cos();
-                let sin_val = angle.sin();
+    for h in 0..num_heads {
+        for pos in 0..seq_len {
+            let base = h * seq_len * head_dim + pos * head_dim;
+            for i in 0..half {
+                let (cos_val, sin_val) = if !cos_table.is_empty() {
+                    let idx = (position + pos) * half + i;
+                    (cos_table[idx], sin_table[idx])
+                } else {
+                    let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+                    let angle = (position + pos) as f32 * freq;
+                    (angle.cos(), angle.sin())
+                };
 
-                let idx_even = h * seq_len * head_dim + pos * head_dim + 2 * i;
-                let idx_odd = h * seq_len * head_dim + pos * head_dim + 2 * i + 1;
+                let idx_even = base + 2 * i;
+                let idx_odd = base + 2 * i + 1;
 
-                let x_even = x.get_flat_f32(idx_even);
-                let x_odd = x.get_flat_f32(idx_odd);
+                let x_even = x_slice[idx_even];
+                let x_odd = x_slice[idx_odd];
 
-                x.set_flat_f32(idx_even, x_even * cos_val - x_odd * sin_val);
-                x.set_flat_f32(idx_odd, x_even * sin_val + x_odd * cos_val);
+                x_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
+                x_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
             }
         }
     }
@@ -321,6 +416,7 @@ fn gpu_rope(
     head_dim: usize,
     theta: f32,
     gpu: Option<&GpuContext>,
+    rope_cache: Option<&RoPECache>,
 ) {
     #[cfg(feature = "gpu")]
     if let Some(ctx) = gpu {
@@ -334,7 +430,7 @@ fn gpu_rope(
         }
     }
     let _ = gpu;
-    apply_rotary_emb_inplace(q, k, position, head_dim, theta);
+    apply_rotary_emb_inplace_with_cache(q, k, position, head_dim, theta, rope_cache);
 }
 
 #[cfg(test)]

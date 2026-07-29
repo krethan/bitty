@@ -1,4 +1,4 @@
-use crate::attention::{Attention, KvCache};
+use crate::attention::{Attention, KvCache, RoPECache};
 use crate::config::ModelConfig;
 use crate::layers::{Embedding, Linear, RmsNorm};
 use crate::sampler::Sampler;
@@ -23,7 +23,7 @@ impl TransformerLayer {
         layer_idx: usize,
         position: usize,
     ) -> Tensor {
-        self.forward_gpu(input, cache, layer_idx, position, None)
+        self.forward_gpu(input, cache, layer_idx, position, None, None)
     }
 
     pub fn forward_gpu(
@@ -33,23 +33,50 @@ impl TransformerLayer {
         layer_idx: usize,
         position: usize,
         gpu: Option<&GpuContext>,
+        rope_cache: Option<&RoPECache>,
     ) -> Tensor {
-        let residual = input.clone();
         let normed = self.attn_norm.forward_gpu(input, gpu);
         let attn_out = self
             .attention
-            .forward_gpu(&normed, cache, layer_idx, position, gpu);
-        let h = gpu_add(&residual, &attn_out, gpu);
+            .forward_gpu_with_rope_cache(&normed, cache, layer_idx, position, gpu, rope_cache);
 
-        let residual2 = h.clone();
+        #[cfg(feature = "gpu")]
+        if let Some(ctx) = gpu {
+            let h = ctx.add(input, &attn_out).unwrap_or_else(|e| {
+                log::warn!("GPU add failed, falling back to CPU: {}", e);
+                let mut h = input.clone();
+                h.add_assign(&attn_out).unwrap();
+                h
+            });
+            let normed2 = self.ffn_norm.forward_gpu(&h, gpu);
+            let up = self.ffn_up.forward_gpu(&normed2, gpu);
+            let gate = self.ffn_gate.forward_gpu(&normed2, gpu);
+            let activated = silu_mul(&gate, &up);
+            let ffn_out = self.ffn_down.forward_gpu(&activated, gpu);
+            return ctx.add(&h, &ffn_out).unwrap_or_else(|e| {
+                log::warn!("GPU add failed, falling back to CPU: {}", e);
+                let mut h2 = h;
+                h2.add_assign(&ffn_out).unwrap();
+                h2
+            });
+        }
+        let _ = gpu;
+
+        let mut h = input.clone();
+        h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward_gpu(&h, gpu);
         let up = self.ffn_up.forward_gpu(&normed2, gpu);
         let gate = self.ffn_gate.forward_gpu(&normed2, gpu);
-        let gated = silu(&gate);
-        let activated = hadamard(&gated, &up);
+        let activated = silu_mul(&gate, &up);
         let ffn_out = self.ffn_down.forward_gpu(&activated, gpu);
+        h.add_assign(&ffn_out).unwrap();
+        h
 
-        gpu_add(&residual2, &ffn_out, gpu)
+    }
+
+    /// Helper to create a dummy transformer layer for testing.
+    pub fn new_dummy(config: &ModelConfig) -> Self {
+        create_dummy_layer(config)
     }
 }
 
@@ -60,6 +87,7 @@ pub struct Model {
     pub norm: RmsNorm,
     pub lm_head: Linear,
     pub cache: Option<KvCache>,
+    pub rope_cache: Option<RoPECache>,
     #[cfg(feature = "gpu")]
     pub gpu: Option<GpuContext>,
 }
@@ -93,6 +121,12 @@ impl Model {
             config.head_dim(),
         ));
 
+        let rope_cache = Some(RoPECache::new(
+            config.max_seq_len,
+            config.head_dim(),
+            config.rope_theta,
+        ));
+
         Self {
             config,
             embedding,
@@ -100,6 +134,7 @@ impl Model {
             norm,
             lm_head,
             cache,
+            rope_cache,
             #[cfg(feature = "gpu")]
             gpu: None,
         }
@@ -122,17 +157,24 @@ impl Model {
 
         if let Some(ref mut cache) = self.cache {
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward_gpu(&hidden, Some(cache), i, pos + i, gpu);
+                hidden = layer.forward_gpu(&hidden, Some(cache), i, pos, gpu, self.rope_cache.as_ref());
             }
             cache.advance(seq_len);
         } else {
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward_gpu(&hidden, None, i, pos, gpu);
+                hidden = layer.forward_gpu(&hidden, None, i, pos, gpu, self.rope_cache.as_ref());
             }
         }
 
         let normed = self.norm.forward_gpu(&hidden, gpu);
         self.lm_head.forward_gpu(&normed, gpu)
+    }
+
+    fn logits_to_token(&self, logits: &Tensor, row: usize, sampler: &Sampler) -> u32 {
+        let vocab_size = self.config.vocab_size;
+        let slice = logits.as_f32_slice();
+        let start = row * vocab_size;
+        sampler.sample(&slice[start..start + vocab_size])
     }
 
     pub fn generate(
@@ -141,39 +183,11 @@ impl Model {
         max_new_tokens: usize,
         sampler: &Sampler,
     ) -> Vec<u32> {
-        let mut tokens = prompt_tokens.to_vec();
         let mut generated = Vec::new();
-
-        #[cfg(feature = "gpu")]
-        let gpu_ctx = self.gpu.clone();
-        #[cfg(not(feature = "gpu"))]
-        let gpu_ctx: Option<GpuContext> = None;
-
-        let logits = self.forward_gpu(&tokens, gpu_ctx.as_ref());
-        let last_logits_row = logits.shape()[0] - 1;
-        let vocab_size = self.config.vocab_size;
-        let mut logits_vec = Vec::with_capacity(vocab_size);
-        for j in 0..vocab_size {
-            logits_vec.push(logits.get_flat_f32(last_logits_row * vocab_size + j));
-        }
-        let next_token = sampler.sample(&logits_vec);
-        tokens.push(next_token);
-        generated.push(next_token);
-
-        let mut next_token = next_token;
-
-        for _ in 1..max_new_tokens {
-            let logits = self.forward_gpu(&[next_token], gpu_ctx.as_ref());
-            let vocab_size = self.config.vocab_size;
-            let mut logits_vec = Vec::with_capacity(vocab_size);
-            for j in 0..vocab_size {
-                logits_vec.push(logits.get_flat_f32(j));
-            }
-            next_token = sampler.sample(&logits_vec);
-            tokens.push(next_token);
-            generated.push(next_token);
-        }
-
+        self.generate_loop(prompt_tokens, max_new_tokens, sampler, |t| {
+            generated.push(t);
+            true
+        });
         generated
     }
 
@@ -195,7 +209,22 @@ impl Model {
         sampler: &Sampler,
         tx: tokio::sync::mpsc::Sender<u32>,
     ) {
+        self.generate_loop(prompt_tokens, max_new_tokens, sampler, |t| {
+            tx.blocking_send(t).is_ok()
+        });
+    }
+
+    fn generate_loop(
+        &mut self,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        sampler: &Sampler,
+        mut emit: impl FnMut(u32) -> bool,
+    ) {
         let mut tokens = prompt_tokens.to_vec();
+        if tokens.is_empty() {
+            return;
+        }
 
         #[cfg(feature = "gpu")]
         let gpu_ctx = self.gpu.clone();
@@ -203,28 +232,18 @@ impl Model {
         let gpu_ctx: Option<GpuContext> = None;
 
         let logits = self.forward_gpu(&tokens, gpu_ctx.as_ref());
-        let last_logits_row = logits.shape()[0] - 1;
-        let vocab_size = self.config.vocab_size;
-        let mut logits_vec = Vec::with_capacity(vocab_size);
-        for j in 0..vocab_size {
-            logits_vec.push(logits.get_flat_f32(last_logits_row * vocab_size + j));
-        }
-        let next_token = sampler.sample(&logits_vec);
+        let last_row = logits.shape()[0] - 1;
+        let mut next_token = self.logits_to_token(&logits, last_row, sampler);
         tokens.push(next_token);
-        let _ = tx.blocking_send(next_token);
-
-        let mut next_token = next_token;
+        if !emit(next_token) {
+            return;
+        }
 
         for _ in 1..max_new_tokens {
             let logits = self.forward_gpu(&[next_token], gpu_ctx.as_ref());
-            let vocab_size = self.config.vocab_size;
-            let mut logits_vec = Vec::with_capacity(vocab_size);
-            for j in 0..vocab_size {
-                logits_vec.push(logits.get_flat_f32(j));
-            }
-            next_token = sampler.sample(&logits_vec);
+            next_token = self.logits_to_token(&logits, 0, sampler);
             tokens.push(next_token);
-            if tx.blocking_send(next_token).is_err() {
+            if !emit(next_token) {
                 break;
             }
         }
@@ -267,36 +286,13 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
     }
 }
 
-fn silu(x: &Tensor) -> Tensor {
-    let n = x.num_elements();
-    let mut result = Tensor::zeros(x.shape(), DType::F32);
-    for i in 0..n {
-        let v = x.get_flat_f32(i);
-        let s = 1.0 / (1.0 + (-v).exp());
-        result.set_flat_f32(i, v * s);
-    }
-    result
-}
-
-fn hadamard(a: &Tensor, b: &Tensor) -> Tensor {
-    let n = a.num_elements();
+fn silu_mul(a: &Tensor, b: &Tensor) -> Tensor {
     let mut result = Tensor::zeros(a.shape(), DType::F32);
-    for i in 0..n {
-        result.set_flat_f32(i, a.get_flat_f32(i) * b.get_flat_f32(i));
-    }
+    let a_slice = a.as_f32_slice();
+    let b_slice = b.as_f32_slice();
+    let out_slice = result.as_f32_slice_mut();
+    bitllm_tensor::simd::f32_silu_mul(a_slice, b_slice, out_slice);
     result
-}
-
-fn gpu_add(a: &Tensor, b: &Tensor, gpu: Option<&GpuContext>) -> Tensor {
-    #[cfg(feature = "gpu")]
-    if let Some(ctx) = gpu {
-        return ctx.add(a, b).unwrap_or_else(|e| {
-            log::warn!("GPU add failed, falling back to CPU: {}", e);
-            a.add(b).unwrap()
-        });
-    }
-    let _ = gpu;
-    a.add(b).unwrap()
 }
 
 #[cfg(test)]
@@ -322,8 +318,9 @@ mod tests {
 
     #[test]
     fn test_silu() {
-        let t = Tensor::from_slice(&[0.0, 1.0, -1.0], &[3]);
-        let result = silu(&t);
+        let a = Tensor::from_slice(&[0.0, 1.0, -1.0], &[3]);
+        let ones = Tensor::ones(&[3], DType::F32);
+        let result = silu_mul(&a, &ones);
         assert!((result.get_flat_f32(0) - 0.0).abs() < 1e-6);
         assert!((result.get_flat_f32(1) - (1.0 / (1.0 + (-1.0f32).exp()))).abs() < 1e-6);
     }
@@ -335,5 +332,159 @@ mod tests {
         let sampler = Sampler::greedy();
         let generated = model.generate(&[0, 1], 5, &sampler);
         assert_eq!(generated.len(), 5);
+    }
+
+    #[test]
+    fn test_generation_empty_prompt() {
+        let config = ModelConfig::tiny_test();
+        let mut model = Model::new(config);
+        let sampler = Sampler::greedy();
+        let generated = model.generate(&[], 5, &sampler);
+        assert!(generated.is_empty());
+    }
+
+    #[test]
+    fn test_generation_deterministic() {
+        let config = ModelConfig::tiny_test();
+        let mut model1 = Model::new(config.clone());
+        let mut model2 = Model::new(config);
+        let sampler = Sampler::greedy();
+        let gen1 = model1.generate(&[0, 1, 2], 10, &sampler);
+        let gen2 = model2.generate(&[0, 1, 2], 10, &sampler);
+        assert_eq!(gen1, gen2);
+    }
+
+    #[test]
+    fn test_forward_single_token() {
+        let config = ModelConfig::tiny_test();
+        let mut model = Model::new(config);
+        let logits = model.forward(&[42]);
+        assert_eq!(logits.shape(), &[1, 256]);
+    }
+
+    #[test]
+    fn test_forward_caches_position() {
+        let config = ModelConfig::tiny_test();
+        let mut model = Model::new(config);
+        model.forward(&[0, 1, 2]);
+        let cache_len = model.cache.as_ref().unwrap().get_seq_len();
+        assert_eq!(cache_len, 3);
+    }
+
+    #[test]
+    fn test_clear_cache() {
+        let config = ModelConfig::tiny_test();
+        let mut model = Model::new(config);
+        model.forward(&[0, 1, 2, 3]);
+        assert!(model.cache.as_ref().unwrap().get_seq_len() > 0);
+        model.clear_cache();
+        assert_eq!(model.cache.as_ref().unwrap().get_seq_len(), 0);
+    }
+
+    #[test]
+    fn test_load_weights_and_generate() {
+        let config = ModelConfig::tiny_test();
+        let data = create_test_model_safetensors(&config);
+        let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
+
+        let mut model = Model::new(config.clone());
+        let stats =
+            crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
+        assert_eq!(stats.loaded, 20);
+
+        let sampler = Sampler::greedy();
+        let generated = model.generate(&[0, 1], 3, &sampler);
+        assert_eq!(generated.len(), 3);
+    }
+
+    #[test]
+    fn test_load_weights_int8_quantize_and_generate() {
+        let config = ModelConfig::tiny_test();
+        let data = create_test_model_safetensors(&config);
+        let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
+
+        let mut model = Model::new(config.clone());
+        let stats =
+            crate::loader::load_safetensors_weights(&mut model, &loader, &config, Some("int8"));
+        assert_eq!(stats.loaded, 20);
+
+        let sampler = Sampler::greedy();
+        let generated = model.generate(&[0, 1], 3, &sampler);
+        assert_eq!(generated.len(), 3);
+    }
+
+    #[test]
+    fn test_model_forward_shape_varies_with_seq_len() {
+        let config = ModelConfig::tiny_test();
+        let mut model = Model::new(config);
+        let logits1 = model.forward(&[0]);
+        assert_eq!(logits1.shape(), &[1, 256]);
+        model.clear_cache();
+        let logits3 = model.forward(&[0, 1, 2]);
+        assert_eq!(logits3.shape(), &[3, 256]);
+    }
+
+    fn create_test_model_safetensors(config: &ModelConfig) -> Vec<u8> {
+        let mut tensors: Vec<(String, Vec<f32>, Vec<usize>)> = Vec::new();
+
+        tensors.push((
+            "model.embed_tokens.weight".into(),
+            vec![0.1; config.vocab_size * config.hidden_size],
+            vec![config.vocab_size, config.hidden_size],
+        ));
+
+        tensors.push((
+            "model.norm.weight".into(),
+            vec![1.0; config.hidden_size],
+            vec![config.hidden_size],
+        ));
+
+        for i in 0..config.num_layers {
+            let h = config.hidden_size;
+            let kv = config.num_kv_heads() * config.head_dim();
+            let inter = config.intermediate_size;
+
+            let layer_tensors = vec![
+                (format!("model.layers.{}.self_attn.q_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
+                (format!("model.layers.{}.self_attn.k_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
+                (format!("model.layers.{}.self_attn.v_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
+                (format!("model.layers.{}.self_attn.o_proj.weight", i), vec![0.01; h * kv], vec![h, kv]),
+                (format!("model.layers.{}.mlp.gate_proj.weight", i), vec![0.01; inter * h], vec![inter, h]),
+                (format!("model.layers.{}.mlp.up_proj.weight", i), vec![0.01; inter * h], vec![inter, h]),
+                (format!("model.layers.{}.mlp.down_proj.weight", i), vec![0.01; h * inter], vec![h, inter]),
+                (format!("model.layers.{}.input_layernorm.weight", i), vec![1.0; h], vec![h]),
+                (format!("model.layers.{}.post_attention_layernorm.weight", i), vec![1.0; h], vec![h]),
+            ];
+            tensors.extend(layer_tensors);
+        }
+
+        let mut header_map = serde_json::Map::new();
+        let mut data_blob = Vec::new();
+        let mut offset = 0usize;
+
+        for (name, data, shape) in &tensors {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let len = bytes.len();
+            header_map.insert(
+                name.clone(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": shape,
+                    "data_offsets": [offset, offset + len]
+                }),
+            );
+            data_blob.extend_from_slice(&bytes);
+            offset += len;
+        }
+
+        let header = serde_json::Value::Object(header_map);
+        let header_str = serde_json::to_string(&header).unwrap();
+        let header_bytes = header_str.as_bytes();
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        file.extend_from_slice(header_bytes);
+        file.extend_from_slice(&data_blob);
+        file
     }
 }

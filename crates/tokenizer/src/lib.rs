@@ -96,19 +96,35 @@ impl BpeTokenizer {
         for word in words {
             let mut chars: Vec<String> = word.chars().map(|c| c.to_string()).collect();
 
-            for (left, right) in &self.merges {
-                let mut new_chars = Vec::new();
-                let mut i = 0;
-                while i < chars.len() {
-                    if i + 1 < chars.len() && chars[i] == *left && chars[i + 1] == *right {
-                        new_chars.push(format!("{}{}", left, right));
-                        i += 2;
-                    } else {
-                        new_chars.push(chars[i].clone());
-                        i += 1;
+            // Build priority map: (left, right) -> earliest merge index
+            let mut priority: HashMap<(&str, &str), usize> = HashMap::new();
+            for (i, (l, r)) in self.merges.iter().enumerate() {
+                let key = (l.as_str(), r.as_str());
+                priority.entry(key).or_insert(i);
+            }
+
+            // Iteratively apply the highest-priority available merge
+            loop {
+                if chars.len() < 2 {
+                    break;
+                }
+                let mut best_pos = usize::MAX;
+                let mut best_pri = usize::MAX;
+                for i in 0..chars.len() - 1 {
+                    let key = (chars[i].as_str(), chars[i + 1].as_str());
+                    if let Some(&pri) = priority.get(&key) {
+                        if pri < best_pri {
+                            best_pri = pri;
+                            best_pos = i;
+                        }
                     }
                 }
-                chars = new_chars;
+                if best_pos == usize::MAX {
+                    break;
+                }
+                let merged = format!("{}{}", chars[best_pos], chars[best_pos + 1]);
+                chars[best_pos] = merged;
+                chars.remove(best_pos + 1);
             }
 
             for c in chars {
@@ -119,6 +135,8 @@ impl BpeTokenizer {
                         let s = ch.to_string();
                         if let Some(&id) = self.vocab.get(&s) {
                             tokens.push(id);
+                        } else if let Some(unk) = self.config.unk_token {
+                            tokens.push(unk);
                         }
                     }
                 }
@@ -218,6 +236,12 @@ impl BpeTokenizer {
             serde_json::Value::Object(map) => {
                 for (key, val) in map {
                     if let Some(id) = val.as_u64() {
+                        if id > u32::MAX as u64 {
+                            return Err(TokenizerError::LoadError(format!(
+                                "token id {} exceeds u32 range for token '{}'",
+                                id, key
+                            )));
+                        }
                         vocab.insert(key.clone(), id as u32);
                     }
                 }

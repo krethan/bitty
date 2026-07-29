@@ -24,18 +24,22 @@ extern "C" __global__ void bitllm_rope(
     float q_val = q[head * head_dim + d];
     float q_pair = q[head * head_dim + ((d + half_dim) % head_dim)];
 
+    float q_out;
     if (d < half_dim) {
-        q[head * head_dim + d] = q_val * cos_val - q_pair * sin_val;
+        q_out = q_val * cos_val - q_pair * sin_val;
     } else {
-        q[head * head_dim + d] = q_val * cos_val + q_pair * sin_val;
+        q_out = q_val * cos_val + q_pair * sin_val;
     }
+    q[head * head_dim + d] = q_out;
 
     float k_val = k[head * head_dim + d];
     float k_pair = k[head * head_dim + ((d + half_dim) % head_dim)];
 
+    float k_out;
     if (d < half_dim) {
-        k[head * head_dim + d] = k_val * cos_val - k_pair * sin_val;
+        k_out = k_val * cos_val - k_pair * sin_val;
     } else {
-        k[head * head_dim + d] = k_val * cos_val + k_pair * sin_val;
+        k_out = k_val * cos_val + k_pair * sin_val;
     }
+    k[head * head_dim + d] = k_out;
 }

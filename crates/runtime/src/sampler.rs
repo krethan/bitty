@@ -1,3 +1,4 @@
+use bitllm_tensor::simd;
 use rand::Rng;
 
 #[derive(Debug, Clone)]
@@ -44,15 +45,8 @@ impl Sampler {
 }
 
 fn greedy_sample(logits: &[f32]) -> u32 {
-    let mut best_idx = 0;
-    let mut best_val = logits[0];
-    for (i, &v) in logits.iter().enumerate() {
-        if v > best_val {
-            best_val = v;
-            best_idx = i;
-        }
-    }
-    best_idx as u32
+    let max_val = simd::f32_max(logits);
+    logits.iter().position(|&v| v == max_val).unwrap_or(0) as u32
 }
 
 fn temp_sample(logits: &[f32], temperature: f32) -> u32 {
@@ -65,40 +59,56 @@ fn temp_sample(logits: &[f32], temperature: f32) -> u32 {
 }
 
 fn top_k_sample(logits: &[f32], k: usize, temperature: f32) -> u32 {
-    let mut indexed: Vec<(usize, f32)> = logits.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let k = k.min(logits.len());
+    if k == 0 {
+        return 0;
+    }
+    let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+    indexed.select_nth_unstable_by(k - 1, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.truncate(k);
 
-    let k = k.min(indexed.len());
-    let filtered: Vec<(usize, f32)> = indexed[..k].to_vec();
-
-    let probs: Vec<f32> = filtered.iter().map(|&(_, v)| v / temperature).collect();
-    let exp_probs: Vec<f32> = probs.iter().map(|&v| v.exp()).collect();
-    let sum: f32 = exp_probs.iter().sum();
-    let normalized: Vec<f32> = exp_probs.iter().map(|&v| v / sum).collect();
+    let max_val = indexed.iter().map(|&(_, v)| v).fold(f32::NEG_INFINITY, f32::max);
+    let inv_temp = 1.0 / temperature;
+    let mut probs: Vec<f32> = indexed.iter().map(|&(_, v)| ((v - max_val) * inv_temp).exp()).collect();
+    let sum: f32 = probs.iter().sum();
+    let inv_sum = 1.0 / sum;
+    for p in probs.iter_mut() {
+        *p *= inv_sum;
+    }
 
     let mut rng = rand::thread_rng();
     let r: f32 = rng.gen();
     let mut cumsum = 0.0;
-    for (i, &p) in normalized.iter().enumerate() {
+    for (i, &p) in probs.iter().enumerate() {
         cumsum += p;
         if r <= cumsum {
-            return filtered[i].0 as u32;
+            return indexed[i].0 as u32;
         }
     }
-    filtered.last().unwrap().0 as u32
+    indexed.last().unwrap().0 as u32
 }
 
 fn top_p_sample(logits: &[f32], p: f32, temperature: f32) -> u32 {
-    let mut indexed: Vec<(usize, f32)> = logits.iter().enumerate().map(|(i, &v)| (i, v)).collect();
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+    indexed.sort_unstable_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let probs = softmax(
-        &indexed.iter().map(|&(_, v)| v).collect::<Vec<_>>(),
-        temperature,
-    );
+    let n = indexed.len();
+    let inv_temp = 1.0 / temperature;
+    let max_val = indexed[0].1;
+    let mut probs = vec![0.0f32; n];
+    let mut sum = 0.0f32;
+    for (i, &(_, v)) in indexed.iter().enumerate() {
+        let prob = ((v - max_val) * inv_temp).exp();
+        probs[i] = prob;
+        sum += prob;
+    }
+    let inv_sum = 1.0 / sum;
+    for p in probs.iter_mut() {
+        *p *= inv_sum;
+    }
 
     let mut cumsum = 0.0;
-    let mut cutoff = indexed.len();
+    let mut cutoff = n;
     for (i, &prob) in probs.iter().enumerate() {
         cumsum += prob;
         if cumsum >= p {
@@ -107,32 +117,36 @@ fn top_p_sample(logits: &[f32], p: f32, temperature: f32) -> u32 {
         }
     }
 
-    let filtered: Vec<(usize, f32)> = indexed[..cutoff].to_vec();
-    let filtered_probs: Vec<f32> = probs[..cutoff].to_vec();
-    let sum: f32 = filtered_probs.iter().sum();
-    let normalized: Vec<f32> = filtered_probs.iter().map(|&v| v / sum).collect();
+    let sum2: f32 = probs[..cutoff].iter().sum();
+    let inv_sum2 = 1.0 / sum2;
+    for i in 0..cutoff {
+        probs[i] *= inv_sum2;
+    }
 
     let mut rng = rand::thread_rng();
     let r: f32 = rng.gen();
     let mut cumsum = 0.0;
-    for (i, &p) in normalized.iter().enumerate() {
-        cumsum += p;
+    for (i, &prob) in probs[..cutoff].iter().enumerate() {
+        cumsum += prob;
         if r <= cumsum {
-            return filtered[i].0 as u32;
+            return indexed[i].0 as u32;
         }
     }
-    filtered.last().unwrap().0 as u32
+    indexed[cutoff - 1].0 as u32
 }
 
 pub fn softmax(logits: &[f32], temperature: f32) -> Vec<f32> {
-    let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let scaled: Vec<f32> = logits
-        .iter()
-        .map(|&v| (v - max_logit) / temperature)
-        .collect();
-    let exp: Vec<f32> = scaled.iter().map(|&v| v.exp()).collect();
-    let sum: f32 = exp.iter().sum();
-    exp.iter().map(|&v| v / sum).collect()
+    let n = logits.len();
+    let max_logit = simd::f32_max(logits);
+    let inv_temp = 1.0 / temperature;
+    let mut probs = vec![0.0f32; n];
+    for i in 0..n {
+        probs[i] = (logits[i] - max_logit) * inv_temp;
+    }
+    simd::f32_exp_inplace(&mut probs);
+    let sum = simd::f32_sum(&probs);
+    simd::f32_scale_inplace(&mut probs, 1.0 / sum);
+    probs
 }
 
 fn sample_from_probs(probs: &[f32]) -> u32 {

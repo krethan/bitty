@@ -13,6 +13,7 @@ bitllm-tensor = { path = "../crates/tensor" }
 bitllm-quantization = { path = "../crates/quantization" }
 bitllm-runtime = { path = "../crates/runtime" }
 rand = "0.8"
+rayon.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }

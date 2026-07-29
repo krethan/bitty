@@ -1,4 +1,4 @@
-use bitllm_tensor::Tensor;
+use bitllm_tensor::{DType, Tensor};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -25,8 +25,14 @@ pub struct DeviceMesh {
 
 impl DeviceMesh {
     pub fn new(world_size: usize, rank: usize) -> Result<Self, DistributedError> {
-        if world_size < 1 {
+        if world_size < 2 {
             return Err(DistributedError::InsufficientDevices);
+        }
+        if rank >= world_size {
+            return Err(DistributedError::ShapeMismatch(format!(
+                "rank {} >= world_size {}",
+                rank, world_size
+            )));
         }
         Ok(Self { world_size, rank })
     }
@@ -210,7 +216,17 @@ impl TensorParallelLinear {
 
     pub fn forward(&self, input: &Tensor) -> Tensor {
         let local_weight = &self.partitions[self.mesh.rank];
-        input.dot(&local_weight.transpose()).unwrap()
+        let m = input.shape()[0];
+        let k = input.shape()[1];
+        let n = local_weight.shape()[0];
+        let mut result = Tensor::zeros(&[m, n], DType::F32);
+        {
+            let a = input.as_f32_slice();
+            let b = local_weight.as_f32_slice();
+            let out = result.as_f32_slice_mut();
+            bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
+        }
+        result
     }
 }
 

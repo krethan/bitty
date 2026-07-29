@@ -1,7 +1,7 @@
-use bitllm_quantization::{absmax_dequantize, absmax_quantize, QuantConfig, QuantizedTensor};
-use bitllm_tensor::simd;
+use bitllm_quantization::{absmax_quantize, QuantConfig, QuantizedTensor};
 use bitllm_tensor::DType;
 use bitllm_tensor::Tensor;
+use std::cell::OnceCell;
 
 use crate::GpuContext;
 
@@ -34,9 +34,20 @@ impl Linear {
     }
 
     fn forward_cpu(&self, input: &Tensor) -> Tensor {
-        let mut result = input.dot(&self.weight.transpose()).unwrap();
+        let m = input.shape()[0];
+        let k = input.shape()[1];
+        let n = self.weight.shape()[0];
+        let mut result = Tensor::zeros(&[m, n], DType::F32);
+        {
+            let a = input.as_f32_slice();
+            let b = self.weight.as_f32_slice();
+            let out = result.as_f32_slice_mut();
+            // weight is (n, k). We compute input @ weight.T by treating
+            // weight as (n rows, k cols) and summing over k.
+            bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
+        }
         if let Some(ref bias) = self.bias {
-            result = result.add(bias).unwrap();
+            result.add_assign(bias).unwrap();
         }
         result
     }
@@ -85,15 +96,31 @@ pub struct QuantizedLinear {
 
 impl QuantizedLinear {
     pub fn forward(&self, input: &Tensor) -> Tensor {
-        let w_dequant = absmax_dequantize(&self.weight);
-        let mut result = input.dot(&w_dequant.transpose()).unwrap();
+        let m = input.shape()[0];
+        let k = input.shape()[1];
+        let n = self.weight.shape[1];
+        let mut result = Tensor::zeros(&[m, n], DType::F32);
+        {
+            let a = input.as_f32_slice();
+            let out = result.as_f32_slice_mut();
+            match self.weight.config.bits {
+                8 => bitllm_quantization::fused_int8_matmul(a, &self.weight, out, m, k, n),
+                1 => bitllm_quantization::fused_bit1_matmul(a, &self.weight, out, m, k, n),
+                _ => {
+                    let w_dequant = bitllm_quantization::absmax_dequantize(&self.weight);
+                    let b = w_dequant.as_f32_slice();
+                    bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
+                }
+            }
+        }
         if let Some(ref bias) = self.bias {
-            result = result.add(bias).unwrap();
+            result.add_assign(bias).unwrap();
         }
         result
     }
 }
 
+#[derive(Clone)]
 pub struct RmsNorm {
     pub weight: Tensor,
     pub eps: f32,
@@ -134,22 +161,18 @@ impl RmsNorm {
         let hidden = input.shape().last().copied().unwrap_or(n);
 
         let mut result = Tensor::zeros(input.shape(), DType::F32);
-        let in_f32 = input.to_f32();
-        let in_slice = in_f32.as_f32_slice();
+        let in_slice = input.as_f32_slice();
         let w_slice = self.weight.as_f32_slice();
         let out_slice = result.as_f32_slice_mut();
 
         let eps = self.eps;
         for i in 0..(n / hidden) {
             let row = &in_slice[i * hidden..][..hidden];
-            let sum_sq: f32 = row.iter().map(|v| v * v).sum();
-            let rms = (sum_sq / hidden as f32 + eps).sqrt();
-            let inv_rms = 1.0 / rms;
+            let sum_sq = bitllm_tensor::simd::f32_dot(row, row);
+            let inv_rms = 1.0 / (sum_sq / hidden as f32 + eps).sqrt();
             let w_row = &w_slice[..hidden];
             let out_row = &mut out_slice[i * hidden..][..hidden];
-            simd::f32_mul(row, w_row, out_row);
-            let tmp = out_row.to_vec();
-            simd::f32_scale(&tmp, inv_rms, out_row);
+            bitllm_tensor::simd::f32_mul_scaled(row, w_row, inv_rms, out_row);
         }
 
         result
@@ -160,6 +183,7 @@ pub struct Embedding {
     pub weight: Tensor,
     pub vocab_size: usize,
     pub embed_dim: usize,
+    cached_f32: OnceCell<Tensor>,
 }
 
 impl Embedding {
@@ -168,6 +192,7 @@ impl Embedding {
             weight,
             vocab_size,
             embed_dim,
+            cached_f32: OnceCell::new(),
         }
     }
 
@@ -177,12 +202,22 @@ impl Embedding {
             weight,
             vocab_size,
             embed_dim,
+            cached_f32: OnceCell::new(),
         }
     }
 
     pub fn forward(&self, token_ids: &[u32]) -> Tensor {
         let seq_len = token_ids.len();
         let mut result = Tensor::zeros(&[seq_len, self.embed_dim], DType::F32);
+
+        let w_slice = if self.weight.dtype() == DType::F32 {
+            self.weight.as_f32_slice()
+        } else {
+            let f32_tensor = self.cached_f32.get_or_init(|| self.weight.to_f32());
+            f32_tensor.as_f32_slice()
+        };
+
+        let out_slice = result.as_f32_slice_mut();
 
         for (pos, &token_id) in token_ids.iter().enumerate() {
             let id = token_id as usize;
@@ -192,10 +227,9 @@ impl Embedding {
                 id,
                 self.vocab_size
             );
-            for j in 0..self.embed_dim {
-                let val = self.weight.get_flat_f32(id * self.embed_dim + j);
-                result.set_flat_f32(pos * self.embed_dim + j, val);
-            }
+            let src = &w_slice[id * self.embed_dim..(id + 1) * self.embed_dim];
+            let dst = &mut out_slice[pos * self.embed_dim..(pos + 1) * self.embed_dim];
+            dst.copy_from_slice(src);
         }
 
         result

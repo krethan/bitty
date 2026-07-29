@@ -1,5 +1,6 @@
 pub mod attention;
 pub mod bitlinear;
+pub mod bittransformer;
 pub mod config;
 pub mod gguf;
 #[cfg(feature = "gpu")]
@@ -31,6 +32,7 @@ impl GpuContext {
 }
 
 pub use bitlinear::BitLinear;
+pub use bittransformer::{BitAttention, BitTransformerLayer};
 pub use config::ModelConfig;
 pub use loader::{load_safetensors_weights, LlamaWeightMapper, LoadingStats, SafeTensorsLoader, WeightTarget};
 pub use model::Model;

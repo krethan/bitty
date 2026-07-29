@@ -14,7 +14,7 @@ pub fn detect_simd_info() -> &'static str {
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_add_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
+pub unsafe fn f32_add_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
     let chunks = len / 8;
     let remainder = len % 8;
 
@@ -33,7 +33,7 @@ unsafe fn f32_add_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) 
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_sub_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
+pub unsafe fn f32_sub_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
     let chunks = len / 8;
     let remainder = len % 8;
 
@@ -52,7 +52,7 @@ unsafe fn f32_sub_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) 
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_mul_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
+pub unsafe fn f32_mul_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
     let chunks = len / 8;
     let remainder = len % 8;
 
@@ -71,7 +71,7 @@ unsafe fn f32_mul_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) 
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_scale_avx2(a: *const f32, scale: f32, out: *mut f32, len: usize) {
+pub unsafe fn f32_scale_avx2(a: *const f32, scale: f32, out: *mut f32, len: usize) {
     let v_scale = _mm256_set1_ps(scale);
     let chunks = len / 8;
     let remainder = len % 8;
@@ -90,7 +90,73 @@ unsafe fn f32_scale_avx2(a: *const f32, scale: f32, out: *mut f32, len: usize) {
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_dot_avx2(a: *const f32, b: *const f32, len: usize) -> f32 {
+pub unsafe fn f32_mul_scaled_avx2(
+    a: *const f32,
+    b: *const f32,
+    scale: f32,
+    out: *mut f32,
+    len: usize,
+) {
+    let v_scale = _mm256_set1_ps(scale);
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = _mm256_loadu_ps(a.add(base));
+        let vb = _mm256_loadu_ps(b.add(base));
+        let vr = _mm256_mul_ps(va, vb);
+        let vr = _mm256_mul_ps(vr, v_scale);
+        _mm256_storeu_ps(out.add(base), vr);
+    }
+
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        *out.add(offset + i) = *a.add(offset + i) * *b.add(offset + i) * scale;
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn f32_add_scalar_avx2(a: *const f32, scalar: f32, out: *mut f32, len: usize) {
+    let v_scalar = _mm256_set1_ps(scalar);
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = _mm256_loadu_ps(a.add(base));
+        let vr = _mm256_add_ps(va, v_scalar);
+        _mm256_storeu_ps(out.add(base), vr);
+    }
+
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        *out.add(offset + i) = *a.add(offset + i) + scalar;
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn f32_axpy_avx2(a: *const f32, scale: f32, b: *mut f32, len: usize) {
+    let v_scale = _mm256_set1_ps(scale);
+    let chunks = len / 8;
+    let remainder = len % 8;
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = _mm256_loadu_ps(a.add(base));
+        let vb = _mm256_loadu_ps(b.add(base));
+        let vr = _mm256_fmadd_ps(va, v_scale, vb);
+        _mm256_storeu_ps(b.add(base), vr);
+    }
+
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        *b.add(offset + i) += *a.add(offset + i) * scale;
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+pub unsafe fn f32_dot_avx2(a: *const f32, b: *const f32, len: usize) -> f32 {
     let chunks = len / 8;
     let remainder = len % 8;
 
@@ -143,6 +209,55 @@ unsafe fn f32_exp_avx2(a: *const f32, out: *mut f32, len: usize) {
     let offset = chunks * 8;
     for i in 0..remainder {
         *out.add(offset + i) = (*a.add(offset + i)).exp();
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+unsafe fn f32_silu_avx2(a: *const f32, out: *mut f32, len: usize) {
+    let chunks = len / 8;
+    let remainder = len % 8;
+    let one = _mm256_set1_ps(1.0);
+    let sign_mask = _mm256_set1_ps(-0.0);
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = _mm256_loadu_ps(a.add(base));
+        let neg = _mm256_xor_ps(va, sign_mask);
+        let exp_neg = fast_exp256(neg);
+        let denom = _mm256_add_ps(one, exp_neg);
+        let vr = _mm256_div_ps(va, denom);
+        _mm256_storeu_ps(out.add(base), vr);
+    }
+
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        *out.add(offset + i) = *a.add(offset + i) / (1.0 + (-*a.add(offset + i)).exp());
+    }
+}
+
+#[target_feature(enable = "avx2,fma")]
+unsafe fn f32_silu_mul_avx2(a: *const f32, b: *const f32, out: *mut f32, len: usize) {
+    let chunks = len / 8;
+    let remainder = len % 8;
+    let one = _mm256_set1_ps(1.0);
+    let sign_mask = _mm256_set1_ps(-0.0);
+
+    for i in 0..chunks {
+        let base = i * 8;
+        let va = _mm256_loadu_ps(a.add(base));
+        let vb = _mm256_loadu_ps(b.add(base));
+        let neg = _mm256_xor_ps(va, sign_mask);
+        let exp_neg = fast_exp256(neg);
+        let denom = _mm256_add_ps(one, exp_neg);
+        let silu = _mm256_div_ps(va, denom);
+        let vr = _mm256_mul_ps(silu, vb);
+        _mm256_storeu_ps(out.add(base), vr);
+    }
+
+    let offset = chunks * 8;
+    for i in 0..remainder {
+        let silu_i = *a.add(offset + i) / (1.0 + (-*a.add(offset + i)).exp());
+        *out.add(offset + i) = silu_i * *b.add(offset + i);
     }
 }
 
@@ -236,6 +351,52 @@ pub fn f32_scale(a: &[f32], scale: f32, out: &mut [f32]) {
     }
 }
 
+pub fn f32_mul_scaled(a: &[f32], b: &[f32], scale: f32, out: &mut [f32]) {
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), out.len());
+    if is_x86_feature_detected!("avx2") && a.len() >= 8 {
+        unsafe {
+            f32_mul_scaled_avx2(a.as_ptr(), b.as_ptr(), scale, out.as_mut_ptr(), a.len())
+        };
+    } else {
+        for i in 0..a.len() {
+            out[i] = a[i] * b[i] * scale;
+        }
+    }
+}
+
+pub fn f32_add_scalar(a: &[f32], scalar: f32, out: &mut [f32]) {
+    if is_x86_feature_detected!("avx2") && a.len() >= 8 {
+        unsafe { f32_add_scalar_avx2(a.as_ptr(), scalar, out.as_mut_ptr(), a.len()) };
+    } else {
+        for i in 0..a.len() {
+            out[i] = a[i] + scalar;
+        }
+    }
+}
+
+pub fn f32_add_scalar_inplace(a: &mut [f32], scalar: f32) {
+    let n = a.len();
+    if is_x86_feature_detected!("avx2") && n >= 8 {
+        unsafe { f32_add_scalar_avx2(a.as_ptr() as *const f32, scalar, a.as_mut_ptr(), n) };
+    } else {
+        for i in 0..n {
+            a[i] += scalar;
+        }
+    }
+}
+
+pub fn f32_axpy(a: &[f32], scale: f32, b: &mut [f32]) {
+    assert_eq!(a.len(), b.len());
+    if is_x86_feature_detected!("avx2") && a.len() >= 8 {
+        unsafe { f32_axpy_avx2(a.as_ptr(), scale, b.as_mut_ptr(), a.len()) };
+    } else {
+        for i in 0..a.len() {
+            b[i] += a[i] * scale;
+        }
+    }
+}
+
 pub fn f32_dot(a: &[f32], b: &[f32]) -> f32 {
     assert_eq!(a.len(), b.len());
     if is_x86_feature_detected!("avx2") && a.len() >= 8 {
@@ -325,6 +486,53 @@ pub fn f32_exp(a: &[f32], out: &mut [f32]) {
     }
 }
 
+pub fn f32_exp_inplace(a: &mut [f32]) {
+    let n = a.len();
+    if is_x86_feature_detected!("avx2") && n >= 8 {
+        unsafe { f32_exp_avx2(a.as_ptr() as *const f32, a.as_mut_ptr(), n) };
+    } else {
+        for i in 0..n {
+            a[i] = a[i].exp();
+        }
+    }
+}
+
+pub fn f32_scale_inplace(a: &mut [f32], scale: f32) {
+    let n = a.len();
+    if is_x86_feature_detected!("avx2") && n >= 8 {
+        unsafe { f32_scale_avx2(a.as_ptr() as *const f32, scale, a.as_mut_ptr(), n) };
+    } else {
+        for i in 0..n {
+            a[i] *= scale;
+        }
+    }
+}
+
+pub fn f32_silu(a: &[f32], out: &mut [f32]) {
+    assert_eq!(a.len(), out.len());
+    if is_x86_feature_detected!("avx2") && a.len() >= 8 {
+        unsafe { f32_silu_avx2(a.as_ptr(), out.as_mut_ptr(), a.len()) };
+    } else {
+        for i in 0..a.len() {
+            out[i] = a[i] / (1.0 + (-a[i]).exp());
+        }
+    }
+}
+
+pub fn f32_silu_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
+    assert_eq!(a.len(), b.len());
+    assert_eq!(a.len(), out.len());
+    if is_x86_feature_detected!("avx2") && a.len() >= 8 {
+        unsafe {
+            f32_silu_mul_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), a.len())
+        };
+    } else {
+        for i in 0..a.len() {
+            out[i] = (a[i] / (1.0 + (-a[i]).exp())) * b[i];
+        }
+    }
+}
+
 #[target_feature(enable = "avx2,fma,popcnt")]
 unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize) {
     let chunks_32 = n / 32;
@@ -336,15 +544,21 @@ unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize)
         let vb = _mm256_loadu_si256(b.add(byte_idx) as *const __m256i);
         let xnor = _mm256_andnot_si256(_mm256_xor_si256(va, vb), _mm256_set1_epi8(-1i8));
 
-        let lo64 = _mm256_extract_epi64::<0>(xnor);
-        let lo32 = (lo64 as u32).count_ones() as u8;
-        let hi32 = ((lo64 >> 32) as u32).count_ones() as u8;
-        let hi64 = _mm256_extract_epi64::<1>(xnor);
-        let lo32_2 = (hi64 as u32).count_ones() as u8;
-        let hi32_2 = ((hi64 >> 32) as u32).count_ones() as u8;
+        let lo128 = _mm256_castsi256_si128(xnor);
+        let hi128 = _mm256_extracti128_si256::<1>(xnor);
 
-        let packed = lo32 | (hi32 << 4);
-        let packed2 = lo32_2 | (hi32_2 << 4);
+        let lo32 = _mm_cvtsi128_si32(lo128) as u32;
+        let mid_lo32 = (_mm_extract_epi32::<1>(lo128)) as u32;
+        let mid_hi32 = _mm_cvtsi128_si32(hi128) as u32;
+        let hi32 = (_mm_extract_epi32::<1>(hi128)) as u32;
+
+        let pop0 = lo32.count_ones() as u8;
+        let pop1 = mid_lo32.count_ones() as u8;
+        let pop2 = mid_hi32.count_ones() as u8;
+        let pop3 = hi32.count_ones() as u8;
+
+        let packed = pop0 | (pop1 << 4);
+        let packed2 = pop2 | (pop3 << 4);
         *out.add(i * 2) = packed;
         *out.add(i * 2 + 1) = packed2;
     }
@@ -384,25 +598,199 @@ unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize)
     }
 }
 
+#[target_feature(enable = "avx2,fma")]
+unsafe fn f32_matmul_row_avx2_unrolled(a: *const f32, b_t: *const f32, out: *mut f32, k: usize, n: usize) {
+    let mut j = 0;
+    while j + 4 <= n {
+        let mut s0 = _mm256_setzero_ps();
+        let mut s1 = _mm256_setzero_ps();
+        let mut s2 = _mm256_setzero_ps();
+        let mut s3 = _mm256_setzero_ps();
+        let mut t = 0;
+        while t + 8 <= k {
+            let va = _mm256_loadu_ps(a.add(t));
+            s0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add(j * k + t)), s0);
+            s1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 1) * k + t)), s1);
+            s2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 2) * k + t)), s2);
+            s3 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 3) * k + t)), s3);
+            t += 8;
+        }
+        let mut sum0 = hsum256(s0);
+        let mut sum1 = hsum256(s1);
+        let mut sum2 = hsum256(s2);
+        let mut sum3 = hsum256(s3);
+        while t < k {
+            let av = *a.add(t);
+            sum0 += av * *b_t.add(j * k + t);
+            sum1 += av * *b_t.add((j + 1) * k + t);
+            sum2 += av * *b_t.add((j + 2) * k + t);
+            sum3 += av * *b_t.add((j + 3) * k + t);
+            t += 1;
+        }
+        *out.add(j) = sum0;
+        *out.add(j + 1) = sum1;
+        *out.add(j + 2) = sum2;
+        *out.add(j + 3) = sum3;
+        j += 4;
+    }
+    while j < n {
+        let mut s = _mm256_setzero_ps();
+        let mut t = 0;
+        while t + 8 <= k {
+            let va = _mm256_loadu_ps(a.add(t));
+            s = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add(j * k + t)), s);
+            t += 8;
+        }
+        let mut sum = hsum256(s);
+        while t < k {
+            sum += *a.add(t) * *b_t.add(j * k + t);
+            t += 1;
+        }
+        *out.add(j) = sum;
+        j += 1;
+    }
+}
+
+/// Same as `f32_matmul_row_avx2_unrolled` but with separate stride (`k_stride`)
+/// and length (`kk_len`), and accumulates into `out` instead of overwriting.
+#[target_feature(enable = "avx2,fma")]
+unsafe fn f32_matmul_row_partial_avx2(
+    a: *const f32,
+    b_t: *const f32,
+    out: *mut f32,
+    k_stride: usize,
+    kk_len: usize,
+    n: usize,
+) {
+    let mut j = 0;
+    while j + 4 <= n {
+        let mut s0 = _mm256_setzero_ps();
+        let mut s1 = _mm256_setzero_ps();
+        let mut s2 = _mm256_setzero_ps();
+        let mut s3 = _mm256_setzero_ps();
+        let mut t = 0;
+        while t + 8 <= kk_len {
+            let va = _mm256_loadu_ps(a.add(t));
+            s0 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add(j * k_stride + t)), s0);
+            s1 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 1) * k_stride + t)), s1);
+            s2 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 2) * k_stride + t)), s2);
+            s3 = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add((j + 3) * k_stride + t)), s3);
+            t += 8;
+        }
+        let mut sum0 = hsum256(s0);
+        let mut sum1 = hsum256(s1);
+        let mut sum2 = hsum256(s2);
+        let mut sum3 = hsum256(s3);
+        while t < kk_len {
+            let av = *a.add(t);
+            sum0 += av * *b_t.add(j * k_stride + t);
+            sum1 += av * *b_t.add((j + 1) * k_stride + t);
+            sum2 += av * *b_t.add((j + 2) * k_stride + t);
+            sum3 += av * *b_t.add((j + 3) * k_stride + t);
+            t += 1;
+        }
+        *out.add(j) += sum0;
+        *out.add(j + 1) += sum1;
+        *out.add(j + 2) += sum2;
+        *out.add(j + 3) += sum3;
+        j += 4;
+    }
+    while j < n {
+        let mut s = _mm256_setzero_ps();
+        let mut t = 0;
+        while t + 8 <= kk_len {
+            let va = _mm256_loadu_ps(a.add(t));
+            s = _mm256_fmadd_ps(va, _mm256_loadu_ps(b_t.add(j * k_stride + t)), s);
+            t += 8;
+        }
+        let mut sum = hsum256(s);
+        while t < kk_len {
+            sum += *a.add(t) * *b_t.add(j * k_stride + t);
+            t += 1;
+        }
+        *out.add(j) += sum;
+        j += 1;
+    }
+}
+
 pub fn f32_matmul_row(a: &[f32], b_t: &[f32], out_row: &mut [f32], k: usize, n: usize) {
     if is_x86_feature_detected!("avx2") && k >= 8 {
-        for (j, out_val) in out_row.iter_mut().enumerate().take(n) {
-            *out_val = unsafe { f32_dot_avx2(a.as_ptr(), b_t.as_ptr().add(j * k), k) };
-        }
+        unsafe { f32_matmul_row_avx2_unrolled(a.as_ptr(), b_t.as_ptr(), out_row.as_mut_ptr(), k, n) };
     } else {
-        for (j, out_val) in out_row.iter_mut().enumerate().take(n) {
-            let mut sum = 0.0f32;
+        for j in (0..n).step_by(4) {
+            let remaining = n - j;
+            let mut s0 = 0.0f32;
+            let mut s1 = 0.0f32;
+            let mut s2 = 0.0f32;
+            let mut s3 = 0.0f32;
             for t in 0..k {
-                sum += a[t] * b_t[j * k + t];
+                let av = a[t];
+                s0 += av * b_t[j * k + t];
+                if remaining > 1 { s1 += av * b_t[(j + 1) * k + t]; }
+                if remaining > 2 { s2 += av * b_t[(j + 2) * k + t]; }
+                if remaining > 3 { s3 += av * b_t[(j + 3) * k + t]; }
             }
-            *out_val = sum;
+            out_row[j] = s0;
+            if remaining > 1 { out_row[j + 1] = s1; }
+            if remaining > 2 { out_row[j + 2] = s2; }
+            if remaining > 3 { out_row[j + 3] = s3; }
         }
     }
 }
 
+const KB: usize = 128;
+
 pub fn f32_matmul(a: &[f32], b_t: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
-    for i in 0..m {
-        f32_matmul_row(&a[i * k..], b_t, &mut out[i * n..], k, n);
+    if k <= KB {
+        for i in 0..m {
+            f32_matmul_row(&a[i * k..], b_t, &mut out[i * n..], k, n);
+        }
+        return;
+    }
+    out.fill(0.0);
+    let mut kk = 0;
+    while kk < k {
+        let kk_end = (kk + KB).min(k);
+        let kk_len = kk_end - kk;
+        if is_x86_feature_detected!("avx2") && kk_len >= 8 {
+            for i in 0..m {
+                unsafe {
+                    f32_matmul_row_partial_avx2(
+                        a.as_ptr().add(i * k + kk),
+                        b_t.as_ptr().add(kk),
+                        out.as_mut_ptr().add(i * n),
+                        k,
+                        kk_len,
+                        n,
+                    );
+                }
+            }
+        } else {
+            for i in 0..m {
+                let a_row = &a[i * k + kk..][..kk_len];
+                let out_row = &mut out[i * n..];
+                let b_slice = &b_t[kk..];
+                for j in (0..n).step_by(4) {
+                    let remaining = n - j;
+                    let mut s0 = 0.0f32;
+                    let mut s1 = 0.0f32;
+                    let mut s2 = 0.0f32;
+                    let mut s3 = 0.0f32;
+                    for t in 0..kk_len {
+                        let av = a_row[t];
+                        s0 += av * b_slice[j * k + t];
+                        if remaining > 1 { s1 += av * b_slice[(j + 1) * k + t]; }
+                        if remaining > 2 { s2 += av * b_slice[(j + 2) * k + t]; }
+                        if remaining > 3 { s3 += av * b_slice[(j + 3) * k + t]; }
+                    }
+                    out_row[j] += s0;
+                    if remaining > 1 { out_row[j + 1] += s1; }
+                    if remaining > 2 { out_row[j + 2] += s2; }
+                    if remaining > 3 { out_row[j + 3] += s3; }
+                }
+            }
+        }
+        kk = kk_end;
     }
 }
 

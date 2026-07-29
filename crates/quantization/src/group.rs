@@ -7,6 +7,7 @@ pub struct GroupQuantizer {
 
 impl GroupQuantizer {
     pub fn new(group_size: usize) -> Self {
+        assert!(group_size > 0, "group_size must be > 0");
         Self { group_size }
     }
 
@@ -51,6 +52,10 @@ impl GroupQuantizer {
     pub fn dequantize_int4(&self, qtensor: &QuantizedTensor) -> Tensor {
         let n = qtensor.num_elements();
         let mut result = Tensor::new(&qtensor.shape, bitllm_tensor::DType::F32);
+
+        if qtensor.scales.is_empty() {
+            return result;
+        }
 
         for i in 0..n {
             let group = i / self.group_size;
