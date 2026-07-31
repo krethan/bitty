@@ -1,11 +1,9 @@
-use bitllm_quantization::absmax::absmax_quantize;
-use bitllm_quantization::group::GroupQuantizer;
-use bitllm_quantization::qmatmul::quantized_matmul;
+use bitllm_quantization::qmatmul::fused_bit1_matmul;
 use bitllm_quantization::scheme::QuantConfig;
 use bitllm_quantization::ternary::ternary_quantize;
 use bitllm_runtime::BitLinear;
 use bitllm_tensor::simd;
-use bitllm_tensor::{BinaryTensor, DType, Tensor};
+use bitllm_tensor::{DType, Tensor};
 
 use crate::helpers::{auto_iters, print_compute_raw, print_throughput_raw, time_iters, BenchmarkResult};
 
@@ -29,31 +27,14 @@ fn bench_f32_matmul_raw(size: usize, iterations: usize) -> BenchmarkResult {
     })
 }
 
-fn bench_int8_matmul(size: usize, iterations: usize) -> BenchmarkResult {
-    let a = Tensor::random(&[size, size], DType::F32);
-    let b = Tensor::random(&[size, size], DType::F32);
-    let b_q = absmax_quantize(&b, &QuantConfig::int8());
-    time_iters(iterations, || {
-        let _ = quantized_matmul(&a, &b_q).unwrap();
-    })
-}
-
-fn bench_int4_matmul(size: usize, iterations: usize) -> BenchmarkResult {
-    let a = Tensor::random(&[size, size], DType::F32);
-    let b = Tensor::random(&[size, size], DType::F32);
-    let q = GroupQuantizer::new(128);
-    let b_q = q.quantize_int4(&b);
-    time_iters(iterations, || {
-        let _ = quantized_matmul(&a, &b_q).unwrap();
-    })
-}
-
 fn bench_ternary_matmul(size: usize, iterations: usize) -> BenchmarkResult {
     let a = Tensor::random(&[size, size], DType::F32);
     let b = Tensor::random(&[size, size], DType::F32);
     let b_q = ternary_quantize(&b);
+    let mut out = vec![0.0f32; size * size];
+    let input_slice = a.as_f32_slice();
     time_iters(iterations, || {
-        let _ = quantized_matmul(&a, &b_q).unwrap();
+        fused_bit1_matmul(input_slice, &b_q, &mut out, size, size, size);
     })
 }
 
@@ -63,15 +44,6 @@ fn bench_bitlinear_forward(size: usize, iterations: usize) -> BenchmarkResult {
     let input = Tensor::from_slice(&vec![0.5f32; size], &[1, size]);
     time_iters(iterations, || {
         let _ = bl.forward(&input);
-    })
-}
-
-fn bench_binary_matmul(size: usize, iterations: usize) -> BenchmarkResult {
-    let w = Tensor::random(&[size, size], DType::F32);
-    let bt = BinaryTensor::from_tensor(&w);
-    let input = Tensor::from_slice(&vec![0.5f32; size], &[1, size]);
-    time_iters(iterations, || {
-        let _ = bt.matmul(&input);
     })
 }
 
@@ -102,23 +74,9 @@ pub fn bench_matmul_suite() {
             avg,
         );
 
-        let avg = bench_int8_matmul(size, iters).mean;
-        print_throughput_raw(
-            &format!("INT8 quantized_matmul ({})", size),
-            n + n / 4,
-            avg,
-        );
-
-        let avg = bench_int4_matmul(size, iters).mean;
-        print_throughput_raw(
-            &format!("INT4 quantized_matmul ({})", size),
-            n / 2 + n / 4,
-            avg,
-        );
-
         let avg = bench_ternary_matmul(size, iters).mean;
         print_throughput_raw(
-            &format!("Ternary quantized_matmul ({})", size),
+            &format!("Ternary fused_bit1_matmul ({})", size),
             n / 8 + 4,
             avg,
         );
@@ -126,13 +84,6 @@ pub fn bench_matmul_suite() {
         let avg = bench_bitlinear_forward(size, iters).mean;
         print_throughput_raw(
             &format!("BitLinear::forward fused ({})", size),
-            n / 8 + 4,
-            avg,
-        );
-
-        let avg = bench_binary_matmul(size, iters).mean;
-        print_throughput_raw(
-            &format!("BinaryTensor::matmul ({})", size),
             n / 8 + 4,
             avg,
         );
@@ -162,13 +113,6 @@ pub fn bench_matmul_suite() {
         let avg = bench_bitlinear_forward(size, iters).mean;
         print_throughput_raw(
             &format!("BitLinear::forward fused ({})", size),
-            n / 8 + 4,
-            avg,
-        );
-
-        let avg = bench_binary_matmul(size, iters).mean;
-        print_throughput_raw(
-            &format!("BinaryTensor::matmul ({})", size),
             n / 8 + 4,
             avg,
         );

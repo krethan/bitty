@@ -13,10 +13,10 @@ BitLLM implements a layered architecture for quantized LLM inference:
 │   (Transformer, Attention, KV-cache)        │
 ├─────────────────────────────────────────────┤
 │            Quantization Layer                │
-│   (INT8/INT4/1-bit, group quant, GEMM)     │
+│   (1-bit ternary, fused XNOR+LUT GEMM)      │
 ├─────────────────────────────────────────────┤
 │             Tensor Layer                     │
-│   (Multi-dtype, arithmetic, matmul)         │
+│   (F32 + BIT1 dtypes, arithmetic, matmul)   │
 ├─────────────────────────────────────────────┤
 │           Tokenizer Layer                    │
 │   (BPE, encoding, decoding)                 │
@@ -34,39 +34,27 @@ The foundation of BitLLM. Provides a `Tensor` struct backed by raw `Vec<u8>` sto
 
 | Type | Bits | Storage | Use Case |
 |------|------|---------|----------|
-| F32 | 32 | 4 bytes/elem | Default, training |
-| F16 | 16 | 2 bytes/elem | Mixed precision |
-| BF16 | 16 | 2 bytes/elem | Stable gradients |
-| INT8 | 8 | 1 byte/elem | Quantized inference |
-| INT4 | 4 | 2 elem/byte | Aggressive quant |
-| BIT1 | 1 | 8 elem/byte | 1-bit inference |
+| F32 | 32 | 4 bytes/elem | Activations, computation |
+| BIT1 | 1 | 8 elem/byte | Packed 1-bit weights |
+
+Model files stored as F16/BF16/INT8/INT4 (safetensors, GGUF) are converted to F32 at load time.
 
 ### Key Operations
 
 - **Element access**: `get_flat_f32()`, `set_flat_f32()` with automatic dtype decoding
 - **Shape ops**: `reshape()`, `transpose()`, `flatten()`
 - **Arithmetic**: `add()`, `sub()`, `mul()`, `dot()` (matmul)
-- **Conversion**: `to_dtype()`, `to_f32()`, `to_f16()`, etc.
+- **Conversion**: `to_dtype()`, `to_f32()`, `to_bit1()`
 
 ## Quantization Crate (`bitllm-quantization`)
 
-### AbsMax Quantization
-
-Symmetric per-block quantization. Divides tensor into blocks of 256 elements, computes per-block scale = max(|x|) / 127.
-
-### Group Quantization
-
-Per-group quantization with configurable group size (default 128). Each group gets independent scale factors, providing better accuracy for INT4.
-
 ### Ternary (1-bit) Quantization
 
-Sign-only quantization: each value becomes ±absmax. Achieves 32x compression ratio.
+Weights are quantized to {-1, +1} scaled by the per-tensor absmax: `w_q = sign(w) * max(|w|)`. Achieves ~32x compression ratio over F32.
 
-### Quantized Matrix Multiply
+### Fused 1-bit Matrix Multiply
 
-Two modes:
-1. **Dequantize-then-multiply**: Full dequantization then standard matmul
-2. **Fused dequant-matmul**: Inline dequantization during multiply (INT8)
+`fused_bit1_matmul` operates directly on packed BIT1 weights using an XNOR + LUT inner loop: for each group of 8 input elements a 256-entry LUT maps sign-match masks to magnitude sums, so each packed byte contributes its dot-product term in O(1).
 
 ## Runtime Crate (`bitllm-runtime`)
 

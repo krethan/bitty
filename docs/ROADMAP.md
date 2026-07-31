@@ -2,24 +2,22 @@
 
 ## Phase 1: Core Engine (Completed)
 
-- [x] Tensor library with 6 dtypes (F32/F16/BF16/INT8/INT4/BIT1)
-- [x] AbsMax quantization (INT8/INT4)
-- [x] Group quantization with configurable group size
-- [x] Ternary (1-bit) quantization
-- [x] Quantized matrix multiplication
+- [x] Tensor library (F32 activations + packed BIT1 weights)
+- [x] Ternary (1-bit) quantization with absmax scaling
+- [x] Fused 1-bit matmul (XNOR + LUT kernel)
 - [x] BPE tokenizer
 - [x] LLaMA transformer architecture
 - [x] KV-cache for autoregressive generation
 - [x] Multiple sampling strategies
 - [x] OpenAI-compatible API server
 - [x] Tensor parallelism primitives
-- [x] Comprehensive test suite (77 tests)
+- [x] Comprehensive test suite
 
 ## Phase 2: Model Loading & Real Inference
 
-- [ ] SafeTensors/GGUF weight loading
-- [ ] JSON model config parsing
-- [ ] Weight quantization on load
+- [x] SafeTensors/GGUF weight loading (F16/BF16/INT8/INT4 → F32 at load)
+- [x] JSON model config parsing
+- [x] Weight quantization on load (`--quantize ternary`)
 - [ ] Streaming token generation
 - [ ] Tokenizer file loading (BPE merges)
 - [ ] Batch inference support
@@ -41,12 +39,11 @@
 - [ ] Unified CPU/GPU memory management
 - [ ] Multi-GPU tensor parallelism with NCCL
 
-## Phase 5: Advanced Quantization
+## Phase 5: Advanced 1-bit Techniques
 
-- [ ] GPTQ weight quantization
-- [ ] AWQ activation-aware quantization
-- [ ] SmoothQuant for INT8 inference
-- [ ] Mixed-precision quantization per layer
+- [ ] Group-wise 1-bit quantization (finer-grained scales)
+- [ ] BitNet-style activation quantization (W1A8)
+- [ ] Mixed-precision residual paths
 - [ ] Quantization-aware training support
 
 ## Phase 6: Production Features

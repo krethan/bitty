@@ -10,28 +10,14 @@ All benchmarks run on the CPU with release profile optimizations. Measurements i
 
 ## Quantization Accuracy
 
-### INT8 AbsMax Roundtrip
-
-| Metric | Value |
-|--------|-------|
-| Max error | < 0.02 |
-| Mean error | < 0.005 |
-| Compression | 4.0x |
-
-### INT4 Group Quantization (g=128)
-
-| Metric | Value |
-|--------|-------|
-| Max error | < 0.1 |
-| Mean error | < 0.02 |
-| Compression | 7.8x |
-
-### 1-bit Sign Quantization
+### Ternary 1-bit (absmax-scaled)
 
 | Metric | Value |
 |--------|-------|
 | Sign accuracy | 100% |
-| Compression | 31.5x |
+| Compression | ~32x vs FP32 |
+
+Weights are quantized to `sign(w) * max(|w|)` and packed 8 values per byte.
 
 ## Inference Performance
 
@@ -49,10 +35,8 @@ All benchmarks run on the CPU with release profile optimizations. Measurements i
 |--------|-------|
 | Forward pass | TBD |
 | Generation | TBD |
-| Memory (FP32) | ~2.1GB |
-| Memory (INT8) | ~540MB |
-| Memory (INT4) | ~280MB |
-| Memory (1-bit) | ~80MB |
+| Memory (FP32 weights) | ~2.1GB |
+| Memory (1-bit weights) | ~80MB |
 
 ## Tensor Parallelism
 
@@ -66,15 +50,12 @@ All benchmarks run on the CPU with release profile optimizations. Measurements i
 
 ## Memory Reduction
 
-Theoretical memory reduction from quantization:
+Theoretical weight memory from quantization (activations remain F32):
 
-| Precision | Bytes/Param | 7B Model Size |
-|-----------|-------------|---------------|
+| Precision | Bytes/Param | 7B Model Weights |
+|-----------|-------------|------------------|
 | FP32 | 4.0 | 28.0 GB |
-| FP16 | 2.0 | 14.0 GB |
-| INT8 | 1.0 | 7.0 GB |
-| INT4 | 0.5 | 3.5 GB |
-| 1-bit | 0.125 | 0.875 GB |
+| 1-bit ternary | 0.125 | 0.875 GB |
 
 ## Running Benchmarks
 
@@ -87,4 +68,7 @@ cargo bench --workspace
 
 # Run all tests with timing
 cargo test --workspace -- --nocapture
+
+# Standalone benchmark suite
+cargo run --release -p bitllm-benchmarks
 ```

@@ -1,6 +1,4 @@
-use bitllm_quantization::{absmax_quantize, QuantConfig, QuantizedTensor};
-use bitllm_tensor::DType;
-use bitllm_tensor::Tensor;
+use bitllm_tensor::{DType, Tensor};
 use std::cell::OnceCell;
 
 use crate::GpuContext;
@@ -42,8 +40,6 @@ impl Linear {
             let a = input.as_f32_slice();
             let b = self.weight.as_f32_slice();
             let out = result.as_f32_slice_mut();
-            // weight is (n, k). We compute input @ weight.T by treating
-            // weight as (n rows, k cols) and summing over k.
             bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
         }
         if let Some(ref bias) = self.bias {
@@ -76,47 +72,6 @@ impl Linear {
     #[cfg(not(feature = "gpu"))]
     fn forward_gpu_impl(&self, input: &Tensor, _ctx: &GpuContext) -> Tensor {
         self.forward_cpu(input)
-    }
-
-    pub fn quantize_int8(&self) -> QuantizedLinear {
-        let qt = absmax_quantize(&self.weight, &QuantConfig::int8());
-        QuantizedLinear {
-            weight: qt,
-            bias: self.bias.clone(),
-            config: QuantConfig::int8(),
-        }
-    }
-}
-
-pub struct QuantizedLinear {
-    pub weight: QuantizedTensor,
-    pub bias: Option<Tensor>,
-    pub config: QuantConfig,
-}
-
-impl QuantizedLinear {
-    pub fn forward(&self, input: &Tensor) -> Tensor {
-        let m = input.shape()[0];
-        let k = input.shape()[1];
-        let n = self.weight.shape[1];
-        let mut result = Tensor::zeros(&[m, n], DType::F32);
-        {
-            let a = input.as_f32_slice();
-            let out = result.as_f32_slice_mut();
-            match self.weight.config.bits {
-                8 => bitllm_quantization::fused_int8_matmul(a, &self.weight, out, m, k, n),
-                1 => bitllm_quantization::fused_bit1_matmul(a, &self.weight, out, m, k, n),
-                _ => {
-                    let w_dequant = bitllm_quantization::absmax_dequantize(&self.weight);
-                    let b = w_dequant.as_f32_slice();
-                    bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
-                }
-            }
-        }
-        if let Some(ref bias) = self.bias {
-            result.add_assign(bias).unwrap();
-        }
-        result
     }
 }
 

@@ -1,12 +1,11 @@
-mod binary;
 mod error;
 mod init;
+pub mod pnword;
 pub mod simd;
 mod tensor;
 mod types;
 mod view;
 
-pub use binary::BinaryTensor;
 pub use error::TensorError;
 pub use init::InitMethod;
 pub use tensor::Tensor;
@@ -25,24 +24,14 @@ pub enum Device {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor::{bf16_to_f32, f16_to_f32, f32_to_bf16, f32_to_f16};
 
     #[test]
     fn test_dtype_properties() {
         assert_eq!(DType::F32.bit_width(), 32);
-        assert_eq!(DType::F16.bit_width(), 16);
-        assert_eq!(DType::BF16.bit_width(), 16);
-        assert_eq!(DType::INT8.bit_width(), 8);
-        assert_eq!(DType::INT4.bit_width(), 4);
         assert_eq!(DType::BIT1.bit_width(), 1);
-
         assert_eq!(DType::F32.elems_per_byte(), 1);
-        assert_eq!(DType::INT4.elems_per_byte(), 2);
         assert_eq!(DType::BIT1.elems_per_byte(), 8);
-
         assert!(DType::F32.is_float());
-        assert!(!DType::INT8.is_float());
-        assert!(DType::INT4.is_quantized());
         assert!(DType::BIT1.is_quantized());
         assert!(!DType::F32.is_quantized());
     }
@@ -55,13 +44,6 @@ mod tests {
         assert_eq!(t.num_elements(), 6);
         assert_eq!(t.nbytes(), 24);
         assert_eq!(t.ndim(), 2);
-    }
-
-    #[test]
-    fn test_tensor_creation_int4() {
-        let t = Tensor::new(&[4], DType::INT4);
-        assert_eq!(t.num_elements(), 4);
-        assert_eq!(t.nbytes(), 2);
     }
 
     #[test]
@@ -158,78 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn test_to_f16_roundtrip() {
-        let data = [1.0f32, -2.0, 0.5, 0.0];
-        let t = Tensor::from_slice(&data, &[4]);
-        let result = t.to_f16();
-        assert_eq!(result.dtype(), DType::F16);
-        for i in 0..4 {
-            let diff = (result.get_flat_f32(i) - data[i]).abs();
-            assert!(
-                diff < 0.01,
-                "F16 roundtrip failed at {}: got {} expected {}",
-                i,
-                result.get_flat_f32(i),
-                data[i]
-            );
-        }
-    }
-
-    #[test]
-    fn test_to_bf16_roundtrip() {
-        let data = [1.0f32, -2.0, 0.5, 0.0];
-        let t = Tensor::from_slice(&data, &[4]);
-        let result = t.to_bf16();
-        assert_eq!(result.dtype(), DType::BF16);
-        for i in 0..4 {
-            let diff = (result.get_flat_f32(i) - data[i]).abs();
-            assert!(
-                diff < 0.01,
-                "BF16 roundtrip failed at {}: got {} expected {}",
-                i,
-                result.get_flat_f32(i),
-                data[i]
-            );
-        }
-    }
-
-    #[test]
-    fn test_to_int8_roundtrip() {
-        let data = [1.0f32, -1.0, 0.5, -0.5];
-        let t = Tensor::from_slice(&data, &[4]);
-        let result = t.to_int8();
-        assert_eq!(result.dtype(), DType::INT8);
-        for i in 0..4 {
-            let diff = (result.get_flat_f32(i) - data[i]).abs();
-            assert!(
-                diff < 0.02,
-                "INT8 roundtrip failed at {}: got {} expected {}",
-                i,
-                result.get_flat_f32(i),
-                data[i]
-            );
-        }
-    }
-
-    #[test]
-    fn test_to_int4_roundtrip() {
-        let data = [1.0f32, -1.0, 0.5, -0.5];
-        let t = Tensor::from_slice(&data, &[4]);
-        let result = t.to_int4();
-        assert_eq!(result.dtype(), DType::INT4);
-        for i in 0..4 {
-            let diff = (result.get_flat_f32(i) - data[i]).abs();
-            assert!(
-                diff < 0.3,
-                "INT4 roundtrip failed at {}: got {} expected {}",
-                i,
-                result.get_flat_f32(i),
-                data[i]
-            );
-        }
-    }
-
-    #[test]
     fn test_to_bit1_roundtrip() {
         let data = [1.0f32, -1.0, 1.0, -1.0];
         let t = Tensor::from_slice(&data, &[4]);
@@ -254,16 +164,10 @@ mod tests {
     #[test]
     fn test_to_dtype_dispatch() {
         let t = Tensor::from_slice(&[1.0f32], &[1]);
-        let f16 = t.to_dtype(DType::F16);
-        assert_eq!(f16.dtype(), DType::F16);
-        let bf16 = t.to_dtype(DType::BF16);
-        assert_eq!(bf16.dtype(), DType::BF16);
-        let i8 = t.to_dtype(DType::INT8);
-        assert_eq!(i8.dtype(), DType::INT8);
-        let i4 = t.to_dtype(DType::INT4);
-        assert_eq!(i4.dtype(), DType::INT4);
         let b1 = t.to_dtype(DType::BIT1);
         assert_eq!(b1.dtype(), DType::BIT1);
+        let f32 = t.to_dtype(DType::F32);
+        assert_eq!(f32.dtype(), DType::F32);
     }
 
     // === arithmetic tests ===
@@ -309,8 +213,6 @@ mod tests {
         let b = Tensor::from_slice(&[5.0, 6.0, 7.0, 8.0], &[2, 2]);
         let c = a.dot(&b).unwrap();
         assert_eq!(c.shape(), &[2, 2]);
-        // [1*5+2*7, 1*6+2*8] = [19, 22]
-        // [3*5+4*7, 3*6+4*8] = [43, 50]
         assert_eq!(c.get_flat_f32(0), 19.0);
         assert_eq!(c.get_flat_f32(1), 22.0);
         assert_eq!(c.get_flat_f32(2), 43.0);
@@ -337,66 +239,10 @@ mod tests {
         let b = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[3, 2]);
         let c = a.dot(&b).unwrap();
         assert_eq!(c.shape(), &[2, 2]);
-        // [1*1+2*3+3*5, 1*2+2*4+3*6] = [22, 28]
-        // [4*1+5*3+6*5, 4*2+5*4+6*6] = [49, 64]
         assert_eq!(c.get_flat_f32(0), 22.0);
         assert_eq!(c.get_flat_f32(1), 28.0);
         assert_eq!(c.get_flat_f32(2), 49.0);
         assert_eq!(c.get_flat_f32(3), 64.0);
-    }
-
-    // === f16/bf16 conversion helpers ===
-
-    #[test]
-    fn test_f16_zero() {
-        let encoded = f32_to_f16(0.0);
-        assert_eq!(encoded, 0);
-        assert_eq!(f16_to_f32(0), 0.0);
-    }
-
-    #[test]
-    fn test_f16_one() {
-        let encoded = f32_to_f16(1.0);
-        let decoded = f16_to_f32(encoded);
-        let diff = (decoded - 1.0).abs();
-        assert!(diff < 0.001, "f16 roundtrip of 1.0 failed: got {}", decoded);
-    }
-
-    #[test]
-    fn test_f16_negative() {
-        let encoded = f32_to_f16(-3.5);
-        let decoded = f16_to_f32(encoded);
-        let diff = (decoded - (-3.5)).abs();
-        assert!(diff < 0.1, "f16 roundtrip of -3.5 failed: got {}", decoded);
-    }
-
-    #[test]
-    fn test_bf16_roundtrip() {
-        let vals = [0.0f32, 1.0, -1.0, 3.14, 100.0];
-        for &v in &vals {
-            let encoded = f32_to_bf16(v);
-            let decoded = bf16_to_f32(encoded);
-            let diff = (decoded - v).abs();
-            let tol = v.abs() * 0.01 + 0.01;
-            assert!(
-                diff < tol,
-                "bf16 roundtrip of {} failed: got {}",
-                v,
-                decoded
-            );
-        }
-    }
-
-    // === arithmetic with quantized dtypes ===
-
-    #[test]
-    fn test_add_quantized_inputs() {
-        let a = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]).to_int8();
-        let b = Tensor::from_slice(&[0.5, 0.5, 0.5], &[3]).to_int8();
-        let c = a.add(&b).unwrap();
-        assert_eq!(c.dtype(), DType::F32);
-        let diff_0 = (c.get_flat_f32(0) - 1.5).abs();
-        assert!(diff_0 < 0.1);
     }
 
     // === init tests ===
@@ -455,25 +301,6 @@ mod tests {
     }
 
     // === edge case tests ===
-
-    #[test]
-    fn test_int4_roundtrip_larger() {
-        let data: Vec<f32> = (0..16).map(|i| (i as f32 - 8.0) / 8.0).collect();
-        let t = Tensor::from_slice(&data, &[16]);
-        let result = t.to_int4();
-        assert_eq!(result.dtype(), DType::INT4);
-        assert_eq!(result.num_elements(), 16);
-        for i in 0..16 {
-            let diff = (result.get_flat_f32(i) - data[i]).abs();
-            assert!(
-                diff < 0.3,
-                "INT4 failed at {}: got {} expected {}",
-                i,
-                result.get_flat_f32(i),
-                data[i]
-            );
-        }
-    }
 
     #[test]
     fn test_bit1_roundtrip_odd_elements() {

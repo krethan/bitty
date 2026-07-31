@@ -3,6 +3,7 @@ pub mod bitlinear;
 pub mod bittransformer;
 pub mod config;
 pub mod gguf;
+pub mod scheduler;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod layers;

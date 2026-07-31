@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
-use bitllm_quantization::absmax::{absmax_dequantize, absmax_quantize};
-use bitllm_quantization::group::GroupQuantizer;
-use bitllm_quantization::scheme::QuantConfig;
 use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
-use bitllm_tensor::{BinaryTensor, Tensor};
+use bitllm_tensor::Tensor;
 
 // --- Metric helpers ---
 
@@ -98,25 +95,9 @@ fn random_tensor_gaussian(rng: &mut Rng, rows: usize, cols: usize) -> Tensor {
 
 // --- Quantize + dequantize helpers ---
 
-fn quantize_int8(w: &Tensor) -> Tensor {
-    let q = absmax_quantize(w, &QuantConfig::int8());
-    absmax_dequantize(&q)
-}
-
-fn quantize_int4(w: &Tensor) -> Tensor {
-    let qg = GroupQuantizer::new(128);
-    let q = qg.quantize_int4(w);
-    qg.dequantize_int4(&q)
-}
-
 fn quantize_ternary(w: &Tensor) -> Tensor {
     let q = ternary_quantize(w);
     ternary_dequantize(&q)
-}
-
-fn quantize_binary(w: &Tensor) -> Tensor {
-    let bt = BinaryTensor::from_tensor(w);
-    bt.dequantize()
 }
 
 // --- Aggregation ---
@@ -158,10 +139,7 @@ fn bench_weight_reconstruction(size: usize, n_trials: usize) {
     println!("  {}x{} weight reconstruction ({} trials, seeded RNG):", size, size, n_trials);
 
     let schemes: Vec<(&str, Box<dyn Fn(&Tensor) -> Tensor>)> = vec![
-        ("INT8", Box::new(quantize_int8)),
-        ("INT4 (group128)", Box::new(quantize_int4)),
         ("Ternary (2-bit)", Box::new(quantize_ternary)),
-        ("Binary (1-bit)", Box::new(quantize_binary)),
     ];
 
     let mut all_metrics: HashMap<&str, Vec<Metrics>> = HashMap::new();
@@ -195,10 +173,7 @@ fn bench_inference_output(size: usize, n_trials: usize) {
     println!("  (output = input @ quantized_weight^T, compared to input @ weight^T)\n");
 
     let schemes: Vec<(&str, Box<dyn Fn(&Tensor) -> Tensor>)> = vec![
-        ("INT8", Box::new(quantize_int8)),
-        ("INT4 (group128)", Box::new(quantize_int4)),
         ("Ternary (2-bit)", Box::new(quantize_ternary)),
-        ("Binary (1-bit)", Box::new(quantize_binary)),
     ];
 
     let mut all_metrics: HashMap<&str, Vec<Metrics>> = HashMap::new();
@@ -247,7 +222,7 @@ pub fn bench_correctness() {
     bench_inference_output(256, 10);
     bench_inference_output(1024, 5);
 
-    println!("  Note: Binary and Ternary weights are inherently lossy.");
+    println!("  Note: Ternary weights are inherently lossy.");
     println!("  Their strength is in memory reduction and throughput, not weight fidelity.");
     println!("  The inference output comparison shows the actual impact on computation.\n");
 }

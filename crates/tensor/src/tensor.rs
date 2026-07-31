@@ -218,18 +218,6 @@ impl Tensor {
                 let base = idx * 4;
                 f32::from_le_bytes(self.data[base..base + 4].try_into().unwrap())
             }
-            DType::F16 => f16_to_f32(self.u16_at(idx)),
-            DType::BF16 => bf16_to_f32(self.u16_at(idx)),
-            DType::INT8 => self.data[idx] as i8 as f32 / 127.0,
-            DType::INT4 => {
-                let half = (self.data[idx / 2] >> (4 * (idx % 2))) & 0x0f;
-                let val = if half & 0x08 != 0 {
-                    half as i8 - 16
-                } else {
-                    half as i8
-                };
-                (val as f32) / 7.0
-            }
             DType::BIT1 => {
                 if (self.data[idx / 8] >> (idx % 8)) & 1 == 1 {
                     1.0
@@ -244,18 +232,6 @@ impl Tensor {
         match self.dtype {
             DType::F32 => {
                 self.data[idx * 4..idx * 4 + 4].copy_from_slice(&val.to_le_bytes());
-            }
-            DType::F16 => {
-                self.data[idx * 2..idx * 2 + 2].copy_from_slice(&f32_to_f16(val).to_le_bytes())
-            }
-            DType::BF16 => {
-                self.data[idx * 2..idx * 2 + 2].copy_from_slice(&f32_to_bf16(val).to_le_bytes())
-            }
-            DType::INT8 => self.data[idx] = (val.clamp(-1.0, 1.0) * 127.0) as i8 as u8,
-            DType::INT4 => {
-                let v = (val.clamp(-1.0, 1.0) * 7.0) as i8 & 0x0f;
-                let shift = 4 * (idx % 2);
-                self.data[idx / 2] = (self.data[idx / 2] & !(0x0f << shift)) | ((v as u8) << shift);
             }
             DType::BIT1 => {
                 let byte = idx / 8;
@@ -290,25 +266,10 @@ impl Tensor {
     // dtype conversion
 
     pub fn to_dtype(&self, target: DType) -> Self {
-        if target == DType::F32 {
-            return self.to_f32();
+        match target {
+            DType::F32 => self.to_f32(),
+            DType::BIT1 => self.to_bit1(),
         }
-        if target == DType::F16 {
-            return self.to_f16();
-        }
-        if target == DType::BF16 {
-            return self.to_bf16();
-        }
-        if target == DType::INT8 {
-            return self.to_int8();
-        }
-        if target == DType::INT4 {
-            return self.to_int4();
-        }
-        if target == DType::BIT1 {
-            return self.to_bit1();
-        }
-        unreachable!()
     }
 
     pub fn to_f32(&self) -> Self {
@@ -319,79 +280,12 @@ impl Tensor {
         let mut result = Self::new(&self.shape, DType::F32);
         let out = result.as_f32_slice_mut();
         match self.dtype {
-            DType::F16 => {
-                for i in 0..n {
-                    out[i] = f16_to_f32(self.u16_at(i));
-                }
-            }
-            DType::BF16 => {
-                for i in 0..n {
-                    out[i] = bf16_to_f32(self.u16_at(i));
-                }
-            }
-            DType::INT8 => {
-                for i in 0..n {
-                    out[i] = self.data[i] as i8 as f32 / 127.0;
-                }
-            }
-            DType::INT4 => {
-                for i in 0..n {
-                    out[i] = self.get_flat_f32(i);
-                }
-            }
             DType::BIT1 => {
                 for i in 0..n {
                     out[i] = self.get_flat_f32(i);
                 }
             }
             DType::F32 => unreachable!(),
-        }
-        result
-    }
-
-    pub fn to_f16(&self) -> Self {
-        // ok
-        let src = self.to_f32();
-        let mut result = Self::new(&self.shape, DType::F16);
-        for i in 0..src.num_elements() {
-            result.set_flat_f32(i, src.get_flat_f32(i));
-        }
-        result
-    }
-
-    pub fn to_bf16(&self) -> Self {
-        // ok
-        let src = self.to_f32();
-        let mut result = Self::new(&self.shape, DType::BF16);
-        for i in 0..src.num_elements() {
-            result.set_flat_f32(i, src.get_flat_f32(i));
-        }
-        result
-    }
-
-    pub fn to_int8(&self) -> Self {
-        let src = self.to_f32();
-        let n = src.num_elements();
-        let mut result = Self::new(&self.shape, DType::INT8);
-        for i in 0..n {
-            result.set_flat_f32(i, src.get_flat_f32(i));
-        }
-        result
-    }
-
-    pub fn to_int4(&self) -> Self {
-        let src = self.to_f32();
-        let n = src.num_elements();
-        let mut result = Self::new(&self.shape, DType::INT4);
-        for i in 0..n {
-            let v = (src.get_flat_f32(i).clamp(-1.0, 1.0) * 7.0) as i8;
-            if i % 2 == 0 {
-                result.data[i / 2] &= 0xf0;
-                result.data[i / 2] |= (v as u8) & 0x0f;
-            } else {
-                result.data[i / 2] &= 0x0f;
-                result.data[i / 2] |= ((v as u8) & 0x0f) << 4;
-            }
         }
         result
     }
@@ -584,55 +478,4 @@ impl Tensor {
         }
     }
 
-    fn u16_at(&self, idx: usize) -> u16 {
-        u16::from_le_bytes(self.data[idx * 2..idx * 2 + 2].try_into().unwrap())
-    }
-}
-
-// standalone helpers exported for use by other crates
-
-pub fn f32_to_f16(val: f32) -> u16 {
-    let bits = val.to_bits();
-    let sign: u32 = (bits >> 16) & 0x8000;
-    let exponent: i32 = ((bits >> 23) & 0xff) as i32 - 127 + 15;
-    let mantissa = bits & 0x7fffff;
-    if exponent >= 30 {
-        return (sign | 0x7c00) as u16;
-    }
-    if exponent <= 0 {
-        return sign as u16;
-    }
-    let f16_bits = sign | ((exponent as u32) << 10) | (mantissa >> 13);
-    f16_bits as u16
-}
-
-pub fn f16_to_f32(val: u16) -> f32 {
-    let sign = ((val >> 15) & 1) as u32;
-    let exponent = ((val >> 10) & 0x1f) as u32;
-    let mantissa = (val & 0x3ff) as u32;
-    if exponent == 0 && mantissa == 0 {
-        return f32::from_bits(sign << 31);
-    }
-    if exponent == 0 {
-        return f32::from_bits((sign << 31) | ((127 - 15) << 23) | (mantissa << 13));
-    }
-    if exponent == 31 {
-        if mantissa == 0 {
-            return f32::from_bits((sign << 31) | 0x7f800000);
-        } else {
-            return f32::from_bits((sign << 31) | 0x7fc00000);
-        }
-    }
-    f32::from_bits((sign << 31) | ((exponent + 112) << 23) | (mantissa << 13))
-}
-
-pub fn f32_to_bf16(val: f32) -> u16 {
-    let bits = val.to_bits();
-    let rounding = ((bits >> 16) & 1).wrapping_add(0x7fff);
-    let rounded = bits.wrapping_add(rounding);
-    (rounded >> 16) as u16
-}
-
-pub fn bf16_to_f32(val: u16) -> f32 {
-    f32::from_bits((val as u32) << 16)
 }

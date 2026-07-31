@@ -1,0 +1,24 @@
+[package]
+name = "bitllm-cognition"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+description = "Experimental cognition primitives: hyperdimensional computing, sparse associative memory, binary reasoning, and routing-based execution"
+
+[dependencies]
+rand.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+bitllm-tensor = { path = "../tensor" }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "hnsw_bench"
+harness = false
+
+[[bench]]
+name = "encoding_bench"
+harness = false

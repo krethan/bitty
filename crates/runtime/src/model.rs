@@ -1,4 +1,5 @@
 use crate::attention::{Attention, KvCache, RoPECache};
+use crate::bittransformer::BitTransformerLayer;
 use crate::config::ModelConfig;
 use crate::layers::{Embedding, Linear, RmsNorm};
 use crate::sampler::Sampler;
@@ -83,7 +84,10 @@ impl TransformerLayer {
 pub struct Model {
     pub config: ModelConfig,
     pub embedding: Embedding,
+    /// FP32 transformer layers (used when `bit_layers` is None).
     pub layers: Vec<TransformerLayer>,
+    /// When set, inference runs through fused 1-bit BitLinear layers.
+    pub bit_layers: Option<Vec<BitTransformerLayer>>,
     pub norm: RmsNorm,
     pub lm_head: Linear,
     pub cache: Option<KvCache>,
@@ -131,6 +135,7 @@ impl Model {
             config,
             embedding,
             layers,
+            bit_layers: None,
             norm,
             lm_head,
             cache,
@@ -138,6 +143,22 @@ impl Model {
             #[cfg(feature = "gpu")]
             gpu: None,
         }
+    }
+
+    /// Convert all transformer layers to packed 1-bit BitLinear weights.
+    /// Embeddings, norms, and lm_head stay F32. FP32 linear weights are dropped.
+    pub fn quantize_to_bit1(&mut self) {
+        self.bit_layers = Some(
+            self.layers
+                .iter()
+                .map(BitTransformerLayer::from_fp32_layer)
+                .collect(),
+        );
+        self.layers.clear();
+    }
+
+    pub fn is_bit1(&self) -> bool {
+        self.bit_layers.is_some()
     }
 
     #[cfg(feature = "gpu")]
@@ -156,13 +177,39 @@ impl Model {
         let mut hidden = self.embedding.forward(token_ids);
 
         if let Some(ref mut cache) = self.cache {
-            for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward_gpu(&hidden, Some(cache), i, pos, gpu, self.rope_cache.as_ref());
+            if let Some(ref bit_layers) = self.bit_layers {
+                for (i, layer) in bit_layers.iter().enumerate() {
+                    hidden = layer.forward_gpu(
+                        &hidden,
+                        Some(cache),
+                        i,
+                        pos,
+                        gpu,
+                        self.rope_cache.as_ref(),
+                    );
+                }
+            } else {
+                for (i, layer) in self.layers.iter().enumerate() {
+                    hidden = layer.forward_gpu(
+                        &hidden,
+                        Some(cache),
+                        i,
+                        pos,
+                        gpu,
+                        self.rope_cache.as_ref(),
+                    );
+                }
             }
             cache.advance(seq_len);
+        } else if let Some(ref bit_layers) = self.bit_layers {
+            for (i, layer) in bit_layers.iter().enumerate() {
+                hidden =
+                    layer.forward_gpu(&hidden, None, i, pos, gpu, self.rope_cache.as_ref());
+            }
         } else {
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward_gpu(&hidden, None, i, pos, gpu, self.rope_cache.as_ref());
+                hidden =
+                    layer.forward_gpu(&hidden, None, i, pos, gpu, self.rope_cache.as_ref());
             }
         }
 
@@ -391,6 +438,7 @@ mod tests {
         let stats =
             crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
         assert_eq!(stats.loaded, 20);
+        assert!(!model.is_bit1());
 
         let sampler = Sampler::greedy();
         let generated = model.generate(&[0, 1], 3, &sampler);
@@ -398,16 +446,25 @@ mod tests {
     }
 
     #[test]
-    fn test_load_weights_int8_quantize_and_generate() {
+    fn test_load_weights_ternary_bit1_and_generate() {
         let config = ModelConfig::tiny_test();
         let data = create_test_model_safetensors(&config);
         let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
 
         let mut model = Model::new(config.clone());
-        let stats =
-            crate::loader::load_safetensors_weights(&mut model, &loader, &config, Some("int8"));
+        let stats = crate::loader::load_safetensors_weights(
+            &mut model,
+            &loader,
+            &config,
+            Some("ternary"),
+        );
         assert_eq!(stats.loaded, 20);
+        assert!(model.is_bit1());
 
+        let logits = model.forward(&[0, 1, 2]);
+        assert_eq!(logits.shape(), &[3, 256]);
+
+        model.clear_cache();
         let sampler = Sampler::greedy();
         let generated = model.generate(&[0, 1], 3, &sampler);
         assert_eq!(generated.len(), 3);

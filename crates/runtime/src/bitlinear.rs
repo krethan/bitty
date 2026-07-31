@@ -1,26 +1,24 @@
 use bitllm_tensor::{Tensor, DType};
-use bitllm_quantization::absmax_quantize;
+use bitllm_quantization::ternary_quantize;
 use bitllm_quantization::QuantConfig;
 use bitllm_quantization::QuantizedTensor;
-use bitllm_quantization::scheme::QuantScheme;
 use bitllm_quantization::fused_bit1_matmul;
 use crate::layers::Linear;
 
-/// One-bit (ternary -1/+1) Linear layer
+/// One-bit (ternary -1/+1) Linear layer.
 /// Weights are stored as packed 1-bit sign values, with per-tensor scale.
 pub struct BitLinear {
-    pub weight_q: QuantizedTensor,   // packed 1-bit weights (±1, unscaled)
-    pub scale: Tensor,                // per-output-channel scale (f32, same value repeated)
-    pub bias: Option<Tensor>,         // optional bias
+    pub weight_q: QuantizedTensor,
+    pub scale: Tensor,
+    pub bias: Option<Tensor>,
 }
 
 impl BitLinear {
-    /// Convenience constructor: quantize a full-precision weight tensor on the fly
-    pub fn quantize(weight: &Tensor, config: &QuantConfig) -> Self {
-        assert!(config.bits == 1 || config.scheme == QuantScheme::Ternary);
-        let weight = absmax_quantize(weight, config); // uses ternary() internally
-        let n = weight.shape[0]; // output dimension
-        let scale_val = weight.scales[0]; // single scale for all outputs
+    /// Quantize a full-precision weight tensor to 1-bit ternary.
+    pub fn quantize(weight: &Tensor, _config: &QuantConfig) -> Self {
+        let weight = ternary_quantize(weight);
+        let n = weight.shape[0];
+        let scale_val = weight.scales[0];
         let scale_vec = Tensor::from_slice(&vec![scale_val; n], &[n]);
         Self {
             weight_q: weight,
@@ -29,17 +27,16 @@ impl BitLinear {
         }
     }
 
-    /// Construct from pre-quantized weights
+    /// Construct from pre-quantized weights.
     pub fn from_quantized(weight_q: QuantizedTensor, scale: Tensor, bias: Option<Tensor>) -> Self {
         Self { weight_q, scale, bias }
     }
 
-    /// Create a BitLinear from a standard Linear by quantizing its weights to 1-bit (ternary)
+    /// Create a BitLinear from a standard Linear by quantizing its weights.
     pub fn from_linear(linear: &Linear) -> Self {
-        let config = QuantConfig::ternary();
-        let weight_q = absmax_quantize(&linear.weight, &config);
-        let n = weight_q.shape[0]; // output dimension
-        let scale_val = weight_q.scales[0]; // single scale for all outputs
+        let weight_q = ternary_quantize(&linear.weight);
+        let n = weight_q.shape[0];
+        let scale_val = weight_q.scales[0];
         let scale_vec = Tensor::from_slice(&vec![scale_val; n], &[n]);
         Self {
             weight_q,
@@ -65,6 +62,10 @@ impl BitLinear {
             for v in out_slice.iter_mut() {
                 *v *= scale;
             }
+        }
+
+        if let Some(ref bias) = self.bias {
+            result.add_assign(bias).unwrap();
         }
 
         result

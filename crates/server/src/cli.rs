@@ -43,6 +43,7 @@ pub enum Commands {
         #[arg(long)]
         config_json: Option<String>,
 
+        /// Optional on-load weight quantization: "ternary" (1-bit)
         #[arg(long)]
         quantize: Option<String>,
 

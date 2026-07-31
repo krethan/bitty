@@ -1,5 +1,5 @@
 use crate::config::ModelConfig;
-use bitllm_tensor::{DType, Tensor};
+use bitllm_tensor::Tensor;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -73,15 +73,6 @@ impl GgmlType {
         }
     }
 
-    pub fn to_dtype(&self) -> Option<DType> {
-        match self {
-            Self::F32 => Some(DType::F32),
-            Self::F16 => Some(DType::F16),
-            Self::BF16 => Some(DType::BF16),
-            Self::I8 | Self::Q8_0 | Self::Q8_1 | Self::Q8K => Some(DType::INT8),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -469,21 +460,23 @@ impl GgufLoader {
             }
             GgmlType::F16 => {
                 let shape: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
-                let mut tensor = Tensor::new(&shape, DType::F16);
-                let bytes = tensor.data().len();
-                tensor.data_mut().copy_from_slice(
-                    &self.mmap[tensor_data_start as usize..tensor_data_start as usize + bytes],
-                );
-                Ok(tensor)
+                let n = shape.iter().product::<usize>();
+                let raw = &self.mmap[tensor_data_start as usize..];
+                let floats: Vec<f32> = raw[..n * 2]
+                    .chunks_exact(2)
+                    .map(|c| f16_to_f32(u16::from_le_bytes([c[0], c[1]])))
+                    .collect();
+                Ok(Tensor::from_slice(&floats, &shape))
             }
             GgmlType::BF16 => {
                 let shape: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
-                let mut tensor = Tensor::new(&shape, DType::BF16);
-                let bytes = tensor.data().len();
-                tensor.data_mut().copy_from_slice(
-                    &self.mmap[tensor_data_start as usize..tensor_data_start as usize + bytes],
-                );
-                Ok(tensor)
+                let n = shape.iter().product::<usize>();
+                let raw = &self.mmap[tensor_data_start as usize..];
+                let floats: Vec<f32> = raw[..n * 2]
+                    .chunks_exact(2)
+                    .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+                    .collect();
+                Ok(Tensor::from_slice(&floats, &shape))
             }
             GgmlType::I8 | GgmlType::Q8_0 => {
                 let shape: Vec<usize> = info.dimensions.iter().map(|&d| d as usize).collect();
@@ -675,6 +668,7 @@ impl GgufWeightMapper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitllm_tensor::DType;
 
     fn write_u8(buf: &mut Vec<u8>, v: u8) {
         buf.push(v);

@@ -6,14 +6,14 @@ BitLLM dramatically reduces memory requirements for running large language model
 
 ## Features
 
-- **Multi-precision quantization**: F32, F16, BF16, INT8, INT4, and 1-bit (BIT1)
-- **Per-channel and group quantization**: AbsMax, symmetric, and asymmetric schemes
-- **Quantized matrix multiplication**: Fused dequantize-multiply kernels
+- **1-bit quantization**: Ternary weights ({-1, 0, +1}) with per-tensor absmax scaling
+- **Fused 1-bit matrix multiplication**: XNOR + LUT kernel operating directly on packed bits
 - **Transformer inference**: Full LLaMA/GPT-2 architecture support with KV-cache
 - **OpenAI-compatible API server**: Drop-in replacement for `/v1/chat/completions`
 - **Tensor parallelism**: Multi-device model partitioning
 - **BPE tokenizer**: Built-in tokenization with special token support
 - **Multiple sampling strategies**: Greedy, temperature, top-k, top-p
+- **Broad model format support**: Loads safetensors and GGUF (F32/F16/BF16/INT8/INT4 weights are converted to F32 at load time)
 
 ## Quick Start
 
@@ -37,20 +37,29 @@ BitLLM is organized as a Rust workspace with 6 crates:
 
 | Crate | Purpose |
 |---|---|
-| `bitllm-tensor` | Core tensor operations with multi-dtype support |
-| `bitllm-quantization` | Quantization algorithms (absmax, group, ternary) |
+| `bitllm-tensor` | Core tensor operations (F32 activations, BIT1 packed weights) |
+| `bitllm-quantization` | Ternary quantization and fused 1-bit matmul kernels |
 | `bitllm-tokenizer` | BPE tokenizer and encoding/decoding |
 | `bitllm-runtime` | Transformer model, attention, KV-cache, sampling |
 | `bitllm-server` | OpenAI-compatible REST API server |
 | `bitllm-distributed` | Tensor parallelism and multi-device support |
 
-## Quantization Schemes
+## Quantization
 
-| Scheme | Bits | Compression | Quality |
-|---|---|---|---|
-| INT8 AbsMax | 8 | 4x | Near-lossless |
-| INT4 Group (g=128) | 4 | 8x | High quality |
-| 1-bit Sign | 1 | 32x | Experimental |
+| Scheme | Bits | Compression |
+|---|---|---|
+| Ternary (absmax-scaled) | 1 | ~32x |
+
+Load with packed 1-bit weights (fused XNOR+LUT matmul at inference):
+
+```bash
+cargo run --release --bin bitllm -- serve \
+  --safetensors model.safetensors \
+  --config-json config.json \
+  --quantize ternary
+```
+
+Embeddings, norms, and lm_head stay F32; attention/FFN projections are packed BIT1.
 
 ## API
 

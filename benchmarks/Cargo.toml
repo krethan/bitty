@@ -8,6 +8,10 @@ publish = false
 name = "run_benchmarks"
 path = "src/main.rs"
 
+[[bin]]
+name = "bittransformer_bench"
+path = "src/bittransformer_bench.rs"
+
 [dependencies]
 bitllm-tensor = { path = "../crates/tensor" }
 bitllm-quantization = { path = "../crates/quantization" }

@@ -1,8 +1,5 @@
-use bitllm_quantization::absmax::absmax_quantize;
-use bitllm_quantization::group::GroupQuantizer;
-use bitllm_quantization::scheme::QuantConfig;
 use bitllm_quantization::ternary::ternary_quantize;
-use bitllm_tensor::{BinaryTensor, DType, Tensor};
+use bitllm_tensor::{DType, Tensor};
 
 // ── Llama-7B architecture constants ─────────────────────────────────
 
@@ -47,24 +44,11 @@ struct FormatSpec {
 const FORMATS: &[FormatSpec] = &[
     FormatSpec { name: "FP32", bytes_per_param: 4.0 },
     FormatSpec { name: "FP16", bytes_per_param: 2.0 },
-    FormatSpec { name: "INT8", bytes_per_param: 1.0 },
-    FormatSpec {
-        name: "INT4 (group128)",
-        // 4 bits weight + ~0.5 bits for per-group scale + zero
-        // = ~4.5 bits/param = 0.5625 bytes, measured ~0.58
-        bytes_per_param: 0.58,
-    },
     FormatSpec {
         name: "Ternary (2-bit)",
         // 2 bits packed + per-row scale (4 bytes per row of 4096)
         // ~0.25 + tiny overhead
         bytes_per_param: 0.26,
-    },
-    FormatSpec {
-        name: "Binary (1-bit)",
-        // 1 bit packed + per-row scale (4 bytes per row of 4096)
-        // ~0.125 + tiny overhead
-        bytes_per_param: 0.13,
     },
 ];
 
@@ -100,17 +84,8 @@ pub fn bench_memory_footprint() {
 
         let w = Tensor::random(&[size, size], DType::F32);
         let ternary_q = ternary_quantize(&w);
-        let int8_q = absmax_quantize(&w, &QuantConfig::int8());
-        let q = GroupQuantizer::new(128);
-        let int4_q = q.quantize_int4(&w);
-        let bt = BinaryTensor::from_tensor(&w);
 
         let ternary_total = ternary_q.data.len() + ternary_q.scales.len() * 4;
-        let int8_total = int8_q.data.len() + int8_q.scales.len() * 4;
-        let int4_total = int4_q.data.len()
-            + int4_q.scales.len() * 4
-            + int4_q.zeros.as_ref().map_or(0, |z| z.len() * 4);
-        let binary_total = bt.nbytes() + bt.scales.len() * 4;
 
         println!("  {:4}x{:<4} weight matrix:", size, size);
         println!(
@@ -125,32 +100,11 @@ pub fn bench_memory_footprint() {
             fp32_bytes / fp16_bytes
         );
         println!(
-            "    INT8:              {:>8} bytes  ({:>7.1} KB)  [{:>2}x]  (+{:.0} B scales)",
-            int8_total,
-            int8_total as f64 / 1024.0,
-            fp32_bytes / int8_total,
-            int8_q.scales.len() * 4
-        );
-        println!(
-            "    INT4 (group128):   {:>8} bytes  ({:>7.1} KB)  [{:>2}x]  (+{:.0} B scales/zeros)",
-            int4_total,
-            int4_total as f64 / 1024.0,
-            fp32_bytes / int4_total,
-            int4_q.scales.len() * 4 + int4_q.zeros.as_ref().map_or(0, |z| z.len() * 4)
-        );
-        println!(
             "    Ternary (2-bit):   {:>8} bytes  ({:>7.1} KB)  [{:>2}x]  (+{:.0} B scales)",
             ternary_total,
             ternary_total as f64 / 1024.0,
             fp32_bytes / ternary_total,
             ternary_q.scales.len() * 4
-        );
-        println!(
-            "    Binary (1-bit):    {:>8} bytes  ({:>7.1} KB)  [{:>2}x]  (+{:.0} B scales)",
-            binary_total,
-            binary_total as f64 / 1024.0,
-            fp32_bytes / binary_total,
-            bt.scales.len() * 4
         );
         println!();
     }
@@ -256,12 +210,12 @@ pub fn print_max_parameters() {
     let relevant: &[FormatSpec] = &FORMATS[1..]; // skip FP32
 
     println!(
-        "  {:20}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-        "GPU", "FP16", "INT8", "INT4", "Ternary", "Binary"
+        "  {:20}  {:>8}  {:>8}",
+        "GPU", "FP16", "Ternary"
     );
     println!(
-        "  {:20}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-        "───", "────", "────", "────", "───────", "──────"
+        "  {:20}  {:>8}  {:>8}",
+        "───", "────", "───────"
     );
 
     for &(gpu_name, vram) in gpus {
@@ -271,8 +225,8 @@ pub fn print_max_parameters() {
             params.push(format!("{:.1}B", max_params));
         }
         println!(
-            "  {:20}  {:>8}  {:>8}  {:>8}  {:>8}  {:>8}",
-            gpu_name, params[0], params[1], params[2], params[3], params[4]
+            "  {:20}  {:>8}  {:>8}",
+            gpu_name, params[0], params[1]
         );
     }
     println!();
@@ -307,30 +261,24 @@ pub fn bench_kv_cache_simulation() {
     println!("  KV cache size by context length:");
     println!();
     println!(
-        "  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}",
-        "Context", "FP32", "FP16", "INT8", "INT4", "Binary"
+        "  {:>10}  {:>10}  {:>10}",
+        "Context", "FP32", "FP16"
     );
     println!(
-        "  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}",
-        "──────", "────", "────", "────", "────", "──────"
+        "  {:>10}  {:>10}  {:>10}",
+        "──────", "────", "────"
     );
 
     for &ctx in &context_lengths {
         let kv_base = cfg.layers * 2 * ctx * cfg.kv_heads * cfg.head_dim;
         let fp32 = kv_base * 4;
         let fp16 = kv_base * 2;
-        let int8 = kv_base;
-        let int4 = kv_base / 2;
-        let binary = kv_base / 8;
 
         println!(
-            "  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}  {:>10}",
+            "  {:>10}  {:>10}  {:>10}",
             ctx,
             fmt_bytes(fp32 as u64),
             fmt_bytes(fp16 as u64),
-            fmt_bytes(int8 as u64),
-            fmt_bytes(int4 as u64),
-            fmt_bytes(binary as u64),
         );
     }
     println!();
@@ -363,40 +311,6 @@ pub fn print_real_inference_fit() {
     rows.push(FitRow {
         label: "FP16 weights + FP16 KV".into(),
         total: fp16_weights + fp16_kv + overhead + runtime_bytes,
-    });
-
-    // INT4 weights + FP16 KV
-    let int4_weights = (cfg.params as f64 * 0.58) as u64;
-    rows.push(FitRow {
-        label: "INT4 weights + FP16 KV".into(),
-        total: int4_weights + fp16_kv + overhead + runtime_bytes,
-    });
-
-    // INT4 weights + INT8 KV
-    let kv_int8 = kv_base as u64;
-    rows.push(FitRow {
-        label: "INT4 weights + INT8 KV".into(),
-        total: int4_weights + kv_int8 + overhead + runtime_bytes,
-    });
-
-    // Binary weights + FP16 KV
-    let bin_weights = (cfg.params as f64 * 0.13) as u64;
-    rows.push(FitRow {
-        label: "Binary weights + FP16 KV".into(),
-        total: bin_weights + fp16_kv + overhead + runtime_bytes,
-    });
-
-    // Binary weights + INT8 KV
-    rows.push(FitRow {
-        label: "Binary weights + INT8 KV".into(),
-        total: bin_weights + kv_int8 + overhead + runtime_bytes,
-    });
-
-    // Binary weights + INT4 KV
-    let kv_int4 = kv_base as u64 / 2;
-    rows.push(FitRow {
-        label: "Binary weights + INT4 KV".into(),
-        total: bin_weights + kv_int4 + overhead + runtime_bytes,
     });
 
     println!(
@@ -434,35 +348,6 @@ pub fn print_real_inference_fit() {
     }
     println!();
 
-    // GPU-specific fit table
-    println!("  GPU fit matrix:");
-    println!();
-    println!(
-        "  {:20}  {:>10}  {:>10}  {:>10}",
-        "GPU", "FP16+FP16", "INT4+INT8", "Binary+INT8"
-    );
-    println!(
-        "  {:20}  {:>10}  {:>10}  {:>10}",
-        "───", "────────", "─────────", "───────────"
-    );
-
-    let combos: &[usize] = &[0, 2, 4]; // FP16+FP16, INT4+INT8, Binary+INT8
-    for &(gpu_name, vram) in gpus {
-        let mut cells = Vec::new();
-        for &ci in combos {
-            let total = rows[ci].total;
-            if total <= vram {
-                cells.push(format!("{} OK", fmt_bytes(total)));
-            } else {
-                let over = total - vram;
-                cells.push(format!("{} (+{})", fmt_bytes(total), fmt_bytes(over)));
-            }
-        }
-        println!(
-            "  {:20}  {:>10}  {:>10}  {:>10}",
-            gpu_name, cells[0], cells[1], cells[2]
-        );
-    }
     println!();
 }
 

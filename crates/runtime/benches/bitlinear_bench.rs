@@ -1,3 +1,4 @@
+use bitllm_quantization::fused_bit1_matmul;
 use bitllm_quantization::scheme::QuantConfig;
 use bitllm_runtime::BitLinear;
 use bitllm_tensor::{simd, DType, Tensor};
@@ -14,8 +15,8 @@ fn bench_bitlinear(c: &mut Criterion) {
 
     let input = Tensor::from_slice(&vec![0.5f32; input_size], &[1, input_size]);
 
-    let w_int8 = bitllm_quantization::absmax_quantize(&w_fp32, &QuantConfig::int8());
     let bl_ternary = BitLinear::quantize(&w_fp32, &QuantConfig::ternary());
+    let w_ternary = bitllm_quantization::ternary_quantize(&w_fp32);
 
     let w_t = w_fp32.transpose();
 
@@ -40,12 +41,18 @@ fn bench_bitlinear(c: &mut Criterion) {
         })
     });
 
-    c.bench_function("int8_matmul_256x64", |b| {
+    c.bench_function("bit1_fused_matmul_256x64", |b| {
+        let i_s = input.as_f32_slice();
+        let mut out = vec![0.0f32; output_size];
         b.iter(|| {
-            let _ = black_box(bitllm_quantization::quantized_matmul(
-                black_box(&input),
-                black_box(&w_int8),
-            ));
+            fused_bit1_matmul(
+                black_box(i_s),
+                black_box(&w_ternary),
+                &mut out,
+                1,
+                input_size,
+                output_size,
+            );
         })
     });
 
@@ -76,21 +83,19 @@ fn bench_memory_footprint(c: &mut Criterion) {
 
     for &size in &sizes {
         let w_fp32 = Tensor::random(&[size, size], DType::F32);
-        let w_int8 = bitllm_quantization::absmax_quantize(&w_fp32, &QuantConfig::int8());
+        let w_ternary = bitllm_quantization::ternary_quantize(&w_fp32);
         let bl = BitLinear::quantize(&w_fp32, &QuantConfig::ternary());
 
         let fp32_bytes = size * size * 4;
-        let int8_bytes = size * size;
         let ternary_bytes = (size * size + 3) / 4;
         let input = Tensor::from_slice(&vec![0.5f32; size], &[1, size]);
         let w_t = w_fp32.transpose();
 
         println!(
-            "\n  {:4}x{:<4} weight memory: FP32={:.1}KB INT8={:.1}KB Ternary={:.1}KB",
+            "\n  {:4}x{:<4} weight memory: FP32={:.1}KB Ternary={:.1}KB",
             size,
             size,
             fp32_bytes as f64 / 1024.0,
-            int8_bytes as f64 / 1024.0,
             ternary_bytes as f64 / 1024.0,
         );
 
@@ -100,12 +105,18 @@ fn bench_memory_footprint(c: &mut Criterion) {
             })
         });
 
-        c.bench_function(&format!("int8_matmul_{size}x{size}"), |b| {
+        c.bench_function(&format!("bit1_fused_matmul_{size}x{size}"), |b| {
+            let i_s = input.as_f32_slice();
+            let mut out = vec![0.0f32; size];
             b.iter(|| {
-                let _ = black_box(bitllm_quantization::quantized_matmul(
-                    black_box(&input),
-                    black_box(&w_int8),
-                ));
+                fused_bit1_matmul(
+                    black_box(i_s),
+                    black_box(&w_ternary),
+                    &mut out,
+                    1,
+                    size,
+                    size,
+                );
             })
         });
 
@@ -117,10 +128,63 @@ fn bench_memory_footprint(c: &mut Criterion) {
     }
 }
 
+/// Compare synchronous (layer-by-layer) vs event-driven scheduler execution.
+fn bench_scheduler_throughput(c: &mut Criterion) {
+    use bitllm_runtime::scheduler::*;
+    use bitllm_tensor::pnword::{PNActivation256, PNWeight256};
+
+    let chain_lengths: Vec<usize> = vec![4, 8, 16];
+
+    for &layers in &chain_lengths {
+        let w_vals: Vec<i8> = (0..128).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
+        let weight = PNWeight256::pack(&w_vals, 1.0);
+
+        let mut a_vals = [0i8; 128];
+        for i in 0..32 {
+            a_vals[i] = 1;
+        }
+        let activation = PNActivation256::pack(&a_vals);
+
+        // Synchronous: sequential chain of dot products
+        let bench_name = format!("synchronous_chain_{}_layers", layers);
+        c.bench_function(&bench_name, |b| {
+            b.iter(|| {
+                for _ in 0..layers {
+                    black_box(activation.dot(black_box(&weight)));
+                }
+            })
+        });
+
+        // Event-driven: build fresh graph each iteration
+        let bench_name = format!("event_scheduler_chain_{}_layers", layers);
+        c.bench_function(&bench_name, |b| {
+            b.iter(|| {
+                let mut graph = Graph::new();
+                let sink_id = graph.add_node(Box::new(SinkNode::new("sink")));
+                let mut node_ids = sink_id;
+                for j in 0..layers {
+                    let id = graph.add_node(Box::new(MatMulNode::new(
+                        &format!("matmul_{}", j),
+                        weight,
+                        vec![node_ids],
+                    )));
+                    node_ids = id;
+                }
+                let mut scheduler = Scheduler::new(graph);
+                let packet = Packet::new(activation, node_ids);
+                scheduler.enqueue(packet);
+                scheduler.run(200);
+                black_box(scheduler.stats().packets_processed);
+            })
+        });
+    }
+}
+
 criterion_group!(
     benches,
     bench_bitlinear,
     bench_xnor_kernel,
-    bench_memory_footprint
+    bench_memory_footprint,
+    bench_scheduler_throughput,
 );
 criterion_main!(benches);

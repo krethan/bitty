@@ -1,12 +1,10 @@
 use std::hint::black_box;
 use std::sync::OnceLock;
 
-use bitllm_quantization::absmax::{absmax_dequantize, absmax_quantize};
-use bitllm_quantization::group::GroupQuantizer;
-use bitllm_quantization::quantized_matmul;
-use bitllm_quantization::scheme::{QuantConfig, QuantizedTensor};
+use bitllm_quantization::qmatmul::fused_bit1_matmul;
+use bitllm_quantization::scheme::QuantizedTensor;
 use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
-use bitllm_tensor::{BinaryTensor, Tensor};
+use bitllm_tensor::Tensor;
 use rayon::prelude::*;
 
 use crate::export::PrecisionRow;
@@ -133,33 +131,11 @@ fn random_tensor(rng: &mut Rng, rows: usize, cols: usize) -> Tensor {
 
 // ── Quantize/dequantize wrappers ─────────────────────────────────────
 
-/// Quantizes a tensor to INT8 and returns the dequantized tensor and its size in bytes.
-fn quantize_int8(w: &Tensor) -> (Tensor, usize) {
-    let q = absmax_quantize(w, &QuantConfig::int8());
-    let bytes = q.data.len() + q.scales.len() * 4;
-    (absmax_dequantize(&q), bytes)
-}
-
-/// Quantizes a tensor to INT4 and returns the dequantized tensor and its size in bytes.
-fn quantize_int4(w: &Tensor) -> (Tensor, usize) {
-    let qg = GroupQuantizer::new(128);
-    let q = qg.quantize_int4(w);
-    let bytes = q.data.len() + q.scales.len() * 4 + q.zeros.as_ref().map_or(0, |z| z.len() * 4);
-    (qg.dequantize_int4(&q), bytes)
-}
-
 /// Quantizes a tensor to Ternary and returns the dequantized tensor and its size in bytes.
 fn quantize_ternary(w: &Tensor) -> (Tensor, usize) {
     let q = ternary_quantize(w);
     let bytes = q.data.len() + q.scales.len() * 4;
     (ternary_dequantize(&q), bytes)
-}
-
-/// Quantizes a tensor to Binary and returns the dequantized tensor and its size in bytes.
-fn quantize_binary(w: &Tensor) -> (Tensor, usize) {
-    let bt = BinaryTensor::from_tensor(w);
-    let bytes = bt.nbytes() + bt.scales.len() * std::mem::size_of::<f32>();
-    (bt.dequantize(), bytes)
 }
 
 // ── Correctness measurement ──────────────────────────────────────────
@@ -246,35 +222,20 @@ fn measure_matmul_fp32(input: &Tensor, w_t: &Tensor) -> f64 {
     measure_matmul(input, w_t, |a, b| a.dot(b), 3)
 }
 
-/// Measures the time for INT8 quantized matrix multiplication.
-fn measure_matmul_int8(w: &Tensor, input: &Tensor) -> f64 {
-    static CACHE: OnceLock<QuantizedTensor> = OnceLock::new();
-    let q = CACHE.get_or_init(|| absmax_quantize(w, &QuantConfig::int8()));
-    measure_matmul(input, q, |a, b| quantized_matmul(a, b), 3)
-}
-
-/// Measures the time for INT4 quantized matrix multiplication.
-fn measure_matmul_int4(w: &Tensor, input: &Tensor) -> f64 {
-    static CACHE: OnceLock<QuantizedTensor> = OnceLock::new();
-    let q = CACHE.get_or_init(|| {
-        let qg = GroupQuantizer::new(128);
-        qg.quantize_int4(w)
-    });
-    measure_matmul(input, q, |a, b| quantized_matmul(a, b), 3)
-}
-
 /// Measures the time for Ternary quantized matrix multiplication.
 fn measure_matmul_ternary(w: &Tensor, input: &Tensor) -> f64 {
     static CACHE: OnceLock<QuantizedTensor> = OnceLock::new();
     let q = CACHE.get_or_init(|| ternary_quantize(w));
-    measure_matmul(input, q, |a, b| quantized_matmul(a, b), 10)
-}
-
-/// Measures the time for Binary quantized matrix multiplication.
-fn measure_matmul_binary(w: &Tensor, input: &Tensor) -> f64 {
-    static CACHE: OnceLock<BinaryTensor> = OnceLock::new();
-    let bt = CACHE.get_or_init(|| BinaryTensor::from_tensor(w));
-    measure_matmul(input, bt, |a, b| b.matmul(a), 10)
+    let m = input.shape()[0];
+    let k = input.shape()[1];
+    let n = w.shape()[0];
+    let mut out = vec![0.0f32; m * n];
+    let input_slice = input.as_f32_slice();
+    time_iters(10, || {
+        fused_bit1_matmul(input_slice, q, &mut out, m, k, n);
+        black_box(&out);
+    })
+    .mean
 }
 
 // ── Tok/s projection ─────────────────────────────────────────────────
@@ -330,36 +291,6 @@ pub fn bench_precision_comparison() -> Vec<PrecisionRow> {
         tok_per_sec: fp32_tps,
     }];
 
-    // INT8
-    let (q_int8, int8_bytes) = measure_quality(&w, &|w| quantize_int8(w));
-    let int8_ms = measure_matmul_int8(&w, &input);
-    let int8_tps = project_toks_per_sec(int8_ms);
-    rows.push(PrecisionRow {
-        name: "INT8".to_string(),
-        weight_bytes: int8_bytes,
-        compression_ratio: fp32_bytes as f64 / int8_bytes as f64,
-        cos_sim: q_int8.cos_sim,
-        rel_rmse_pct: q_int8.rel_rmse_pct,
-        max_err: q_int8.max_err,
-        matmul_ms: int8_ms * 1000.0,
-        tok_per_sec: int8_tps,
-    });
-
-    // INT4
-    let (q_int4, int4_bytes) = measure_quality(&w, &|w| quantize_int4(w));
-    let int4_ms = measure_matmul_int4(&w, &input);
-    let int4_tps = project_toks_per_sec(int4_ms);
-    rows.push(PrecisionRow {
-        name: "INT4".to_string(),
-        weight_bytes: int4_bytes,
-        compression_ratio: fp32_bytes as f64 / int4_bytes as f64,
-        cos_sim: q_int4.cos_sim,
-        rel_rmse_pct: q_int4.rel_rmse_pct,
-        max_err: q_int4.max_err,
-        matmul_ms: int4_ms * 1000.0,
-        tok_per_sec: int4_tps,
-    });
-
     // Ternary (2-bit)
     let (q_tern, tern_bytes) = measure_quality(&w, &|w| quantize_ternary(w));
     let tern_ms = measure_matmul_ternary(&w, &input);
@@ -373,21 +304,6 @@ pub fn bench_precision_comparison() -> Vec<PrecisionRow> {
         max_err: q_tern.max_err,
         matmul_ms: tern_ms * 1000.0,
         tok_per_sec: tern_tps,
-    });
-
-    // Binary (1-bit)
-    let (q_bin, bin_bytes) = measure_quality(&w, &|w| quantize_binary(w));
-    let bin_ms = measure_matmul_binary(&w, &input);
-    let bin_tps = project_toks_per_sec(bin_ms);
-    rows.push(PrecisionRow {
-        name: "Binary".to_string(),
-        weight_bytes: bin_bytes,
-        compression_ratio: fp32_bytes as f64 / bin_bytes as f64,
-        cos_sim: q_bin.cos_sim,
-        rel_rmse_pct: q_bin.rel_rmse_pct,
-        max_err: q_bin.max_err,
-        matmul_ms: bin_ms * 1000.0,
-        tok_per_sec: bin_tps,
     });
 
     // Print precision table
@@ -419,10 +335,7 @@ pub fn bench_precision_comparison() -> Vec<PrecisionRow> {
     for (i, row) in rows.iter().enumerate() {
         let snr = match i {
             0 => f64::INFINITY,
-            1 => q_int8.snr_db,
-            2 => q_int4.snr_db,
-            3 => q_tern.snr_db,
-            4 => q_bin.snr_db,
+            1 => q_tern.snr_db,
             _ => 0.0,
         };
         let rating = match snr {

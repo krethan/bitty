@@ -185,43 +185,8 @@ impl SafeTensorsLoader {
             });
         }
 
-        let dtype = parse_dtype(&info.dtype)?;
         let tensor_data = &self.data[start..end];
-
-        Ok(match dtype {
-            DType::F32 => {
-                let floats: Vec<f32> = tensor_data
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                    .collect();
-                Tensor::from_slice(&floats, &info.shape)
-            }
-            DType::F16 => {
-                let mut tensor = Tensor::new(&info.shape, DType::F16);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::BF16 => {
-                let mut tensor = Tensor::new(&info.shape, DType::BF16);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::INT8 => {
-                let mut tensor = Tensor::new(&info.shape, DType::INT8);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::INT4 => {
-                let mut tensor = Tensor::new(&info.shape, DType::INT4);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::BIT1 => {
-                let mut tensor = Tensor::new(&info.shape, DType::BIT1);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-        })
+        bytes_to_tensor(&info.dtype, tensor_data, &info.shape)
     }
 
     pub fn load_all_tensors(&self) -> Result<HashMap<String, Tensor>, LoadError> {
@@ -238,15 +203,75 @@ impl SafeTensorsLoader {
     }
 }
 
-fn parse_dtype(dtype_str: &str) -> Result<DType, LoadError> {
-    match dtype_str {
-        "F32" | "float32" | "Float32" => Ok(DType::F32),
-        "F16" | "float16" | "Float16" | "half" => Ok(DType::F16),
-        "BF16" | "bfloat16" | "BFloat16" => Ok(DType::BF16),
-        "I8" | "int8" | "Int8" => Ok(DType::INT8),
-        "I4" | "int4" | "Int4" => Ok(DType::INT4),
-        "BIT1" | "bit1" | "Bit1" | "1bit" => Ok(DType::BIT1),
-        _ => Err(LoadError::UnsupportedDtype(dtype_str.to_string())),
+/// Convert raw bytes from a safetensors file to a Tensor, converting
+/// F16/BF16/INT8/INT4 to F32 on the fly.
+fn bytes_to_tensor(dtype: &str, data: &[u8], shape: &[usize]) -> Result<Tensor, LoadError> {
+    Ok(match dtype {
+        "F32" | "float32" | "Float32" => {
+            let floats: Vec<f32> = data
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            Tensor::from_slice(&floats, shape)
+        }
+        "F16" | "float16" | "Float16" | "half" => {
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|c| {
+                    let u = u16::from_le_bytes(c.try_into().unwrap());
+                    f16_to_f32(u)
+                })
+                .collect();
+            Tensor::from_slice(&floats, shape)
+        }
+        "BF16" | "bfloat16" | "BFloat16" => {
+            let floats: Vec<f32> = data
+                .chunks_exact(2)
+                .map(|c| f32::from_bits((u16::from_le_bytes(c.try_into().unwrap()) as u32) << 16))
+                .collect();
+            Tensor::from_slice(&floats, shape)
+        }
+        "I8" | "int8" | "Int8" => {
+            let floats: Vec<f32> = data.iter().map(|&b| b as i8 as f32 / 127.0).collect();
+            Tensor::from_slice(&floats, shape)
+        }
+        "I4" | "int4" | "Int4" => {
+            let mut floats = Vec::with_capacity(data.len() * 2);
+            for &byte in data {
+                let lo = (byte & 0x0f) as i8;
+                let hi = ((byte >> 4) & 0x0f) as i8;
+                let lo_val = if lo & 0x08 != 0 { lo - 16 } else { lo };
+                let hi_val = if hi & 0x08 != 0 { hi - 16 } else { hi };
+                floats.push(lo_val as f32 / 7.0);
+                floats.push(hi_val as f32 / 7.0);
+            }
+            Tensor::from_slice(&floats, shape)
+        }
+        "BIT1" | "bit1" | "Bit1" | "1bit" => {
+            let mut tensor = Tensor::new(shape, DType::BIT1);
+            tensor.data_mut().copy_from_slice(data);
+            tensor
+        }
+        _ => return Err(LoadError::UnsupportedDtype(dtype.to_string())),
+    })
+}
+
+fn f16_to_f32(u: u16) -> f32 {
+    let sign = ((u >> 15) & 1) as u32;
+    let exponent = ((u >> 10) & 0x1f) as u32;
+    let mantissa = (u & 0x3ff) as u32;
+    if exponent == 0 && mantissa == 0 {
+        f32::from_bits(sign << 31)
+    } else if exponent == 0 {
+        f32::from_bits((sign << 31) | ((127 - 15) << 23) | (mantissa << 13))
+    } else if exponent == 31 {
+        if mantissa == 0 {
+            f32::from_bits((sign << 31) | 0x7f800000)
+        } else {
+            f32::from_bits((sign << 31) | 0x7fc00000)
+        }
+    } else {
+        f32::from_bits((sign << 31) | ((exponent + 112) << 23) | (mantissa << 13))
     }
 }
 
@@ -288,43 +313,8 @@ impl MmapSafeTensors {
             });
         }
 
-        let dtype = parse_dtype(&info.dtype)?;
         let tensor_data = &self.mmap[self.data_start + start..self.data_start + end];
-
-        Ok(match dtype {
-            DType::F32 => {
-                let floats: Vec<f32> = tensor_data
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                    .collect();
-                Tensor::from_slice(&floats, &info.shape)
-            }
-            DType::F16 => {
-                let mut tensor = Tensor::new(&info.shape, DType::F16);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::BF16 => {
-                let mut tensor = Tensor::new(&info.shape, DType::BF16);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::INT8 => {
-                let mut tensor = Tensor::new(&info.shape, DType::INT8);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::INT4 => {
-                let mut tensor = Tensor::new(&info.shape, DType::INT4);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-            DType::BIT1 => {
-                let mut tensor = Tensor::new(&info.shape, DType::BIT1);
-                tensor.data_mut().copy_from_slice(tensor_data);
-                tensor
-            }
-        })
+        bytes_to_tensor(&info.dtype, tensor_data, &info.shape)
     }
 
     pub fn load_all_tensors(&self) -> Result<HashMap<String, Tensor>, LoadError> {
@@ -487,32 +477,6 @@ pub fn load_safetensors_weights(
             }
         };
 
-        let tensor = match quantize {
-            Some("int8") => {
-                use bitllm_quantization::absmax::absmax_quantize;
-                use bitllm_quantization::scheme::QuantConfig;
-                let q = absmax_quantize(&tensor, &QuantConfig::int8());
-                bitllm_quantization::absmax::absmax_dequantize(&q)
-            }
-            Some("int4") => {
-                use bitllm_quantization::absmax::absmax_quantize;
-                use bitllm_quantization::scheme::QuantConfig;
-                let q = absmax_quantize(&tensor, &QuantConfig::int4());
-                bitllm_quantization::absmax::absmax_dequantize(&q)
-            }
-            Some("ternary") => {
-                use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
-                let q = ternary_quantize(&tensor);
-                ternary_dequantize(&q)
-            }
-            Some("binary") => {
-                use bitllm_tensor::BinaryTensor;
-                let bt = BinaryTensor::from_tensor(&tensor);
-                bt.dequantize()
-            }
-            _ => tensor,
-        };
-
         match target {
             WeightTarget::Embedding => {
                 model.embedding.weight = tensor;
@@ -608,6 +572,11 @@ pub fn load_safetensors_weights(
                 stats.skipped.push(unknown_name);
             }
         }
+    }
+
+    // After FP32 weights are loaded, pack linear layers into fused 1-bit kernels.
+    if quantize == Some("ternary") {
+        model.quantize_to_bit1();
     }
 
     stats
@@ -1107,19 +1076,6 @@ mod tests {
             .iter()
             .sum();
         assert!(embedding_sum.abs() > 0.0, "embedding weights should be non-zero");
-    }
-
-    #[test]
-    fn test_load_safetensors_weights_with_int8_quantize() {
-        let data = create_tiny_safetensors();
-        let loader = SafeTensorsLoader::from_bytes(&data).unwrap();
-        let config = crate::config::ModelConfig::tiny_test();
-
-        let mut model = crate::model::Model::new(config.clone());
-        let stats = load_safetensors_weights(&mut model, &loader, &config, Some("int8"));
-
-        assert_eq!(stats.loaded, 20);
-        assert!(stats.skipped.is_empty());
     }
 
     #[test]

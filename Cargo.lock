@@ -208,6 +208,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitllm-cognition"
+version = "0.1.0"
+dependencies = [
+ "bitllm-tensor",
+ "criterion",
+ "rand",
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "bitllm-distributed"
 version = "0.1.0"
 dependencies = [

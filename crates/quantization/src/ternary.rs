@@ -24,7 +24,6 @@ pub fn ternary_quantize(tensor: &Tensor) -> QuantizedTensor {
         data,
         shape: tensor.shape().to_vec(),
         scales: vec![scale],
-        zeros: None,
         config: QuantConfig::ternary(),
     }
 }

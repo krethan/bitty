@@ -1,5 +1,21 @@
 # Changelog
 
+## [Unreleased] - 2026-07-29
+
+### Changed
+- **1-bit only**: Removed F16, BF16, INT8, and INT4 dtypes. `DType` is now `{F32, BIT1}`.
+- Removed `BinaryTensor`, `GroupQuantizer`, `QuantizedLinear`, `absmax` module, and all INT8/INT4 quantization paths.
+- Quantization is ternary-only: `QuantConfig::ternary()`, `fused_bit1_matmul` (XNOR + LUT kernel).
+- Simplified `QuantConfig` / `QuantizedTensor` (dropped group_size, symmetric, zeros).
+- Safetensors/GGUF loaders convert F16/BF16/INT8/INT4 model files to F32 at load time.
+- Benchmarks and docs updated for FP32 vs ternary 1-bit only.
+
+### Fixed
+- `BitLinear::forward` now applies bias when present.
+
+### Added
+- `Model::quantize_to_bit1()` packs linear layers into `BitTransformerLayer` and runs fused 1-bit matmul at inference (`--quantize ternary`).
+
 ## [0.1.0] - 2026-07-20
 
 ### Initial Release
