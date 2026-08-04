@@ -95,15 +95,13 @@ break `cargo test --workspace`.
 - [x] Tied word embeddings (LLaMA-2 7B, Gemma, T5)
 - [x] RoPE scaling for extended context (LLaMA-2/3 linear/dynamic)
 - [x] SentencePiece tokenizer support (.model file parsing)
-- [ ] Architecture enum (Llama, Mistral, Gpt2, Phi, Qwen)
-- [ ] End-to-end test with real model fixture
+- [x] Architecture enum (Llama, Mistral, Gpt2, Phi, Qwen, Qwen2/Qwen3, Custom) parsed from config.json/GGUF, `Default = Llama`
+- [x] Per-architecture weight mappers (`WeightMapper` trait: Mistral/Gpt2/Phi/Qwen; Mistral/Qwen delegate to LLaMA layout) + dispatch in `load_safetensors_weights`
+- [x] End-to-end test with model fixture (GPT-2-style safetensors: correct field placement + ternary quantization on load)
 - [ ] LLaMA 2/3 full support
-- [ ] Mistral/Mixtral support
-- [ ] Phi support
+- [ ] Mistral/Mixtral support (weight mapping done; needs grouped-query attention wiring)
+- [ ] Phi support (weight mapping done)
 - [ ] Gemma support
-- [ ] Qwen support
-- [ ] Mistral/Mixtral
-- [ ] Phi-2
-- [ ] GPT-2
-- [ ] Qwen
+- [ ] Qwen support (weight mapping done)
+- [ ] GPT-2 support (weight mapping done)
 - [ ] Custom model support
