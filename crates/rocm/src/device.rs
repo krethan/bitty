@@ -161,8 +161,24 @@ pub fn device_count() -> Result<i32> {
     }
 }
 
+pub fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
 pub fn detect_devices() -> Result<Vec<DeviceInfo>> {
     let count = device_count()?;
+    if count == 0 {
+        if is_wsl() {
+            return Err(RocmError::HipError(
+                "No ROCm devices found in WSL2. Ensure AMD ROCm is installed on the Windows host \
+                 and the AMD GPU driver is enabled in WSL2 (dxgkrnl). See docs/WSL2_ROCM.md for setup instructions."
+                    .to_string(),
+            ));
+        }
+        return Err(RocmError::NoDevices);
+    }
     let mut devices = Vec::new();
     for i in 0..count {
         let device = Device::new(i)?;

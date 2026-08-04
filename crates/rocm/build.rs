@@ -1,7 +1,31 @@
+fn is_wsl() -> bool {
+    std::fs::read_to_string("/proc/version")
+        .map(|v| v.to_lowercase().contains("microsoft"))
+        .unwrap_or(false)
+}
+
+fn detect_rocm_path() -> Option<String> {
+    if let Ok(path) = std::env::var("ROCM_PATH") {
+        return Some(path);
+    }
+    if is_wsl() {
+        let candidates = [
+            "/opt/rocm".to_string(),
+            "/usr/local/rocm".to_string(),
+        ];
+        for c in &candidates {
+            if std::path::Path::new(&format!("{}/bin/hipcc", c)).exists() {
+                return Some(c.clone());
+            }
+        }
+    }
+    None
+}
+
 fn main() {
     #[cfg(feature = "rocm")]
     {
-        let rocm_path = std::env::var("ROCM_PATH").unwrap_or_else(|_| "/opt/rocm".to_string());
+        let rocm_path = detect_rocm_path().unwrap_or_else(|| "/opt/rocm".to_string());
 
         let hipcc = format!("{}/bin/hipcc", rocm_path);
 
@@ -10,6 +34,11 @@ fn main() {
                 "cargo:warning=hipcc not found at {}, GPU kernels will not be compiled",
                 hipcc
             );
+            if is_wsl() {
+                println!("cargo:warning=WSL2 detected: ensure AMD ROCm is installed on the Windows host");
+                println!("cargo:warning=and the AMD GPU driver is enabled in WSL2 (dxgkrnl).");
+                println!("cargo:warning=Set ROCM_PATH env var if ROCm is installed in a non-standard location.");
+            }
             return;
         }
 
@@ -25,6 +54,7 @@ fn main() {
             .flag("--offload-arch=gfx90a")
             .flag("--offload-arch=gfx940")
             .flag("--offload-arch=gfx1100")
+            .flag("--offload-arch=gfx1102")
             .flag("-std=c++17")
             .include(format!("{}/include", rocm_path));
 

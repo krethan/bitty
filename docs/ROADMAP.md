@@ -53,11 +53,16 @@ break `cargo test --workspace`.
 
 ## Phase 4: GPU Acceleration
 
-- [ ] AMD ROCm backend
-- [ ] GPU tensor operations
-- [ ] GPU quantized matmul kernels
-- [ ] Unified CPU/GPU memory management
-- [ ] Multi-GPU tensor parallelism with NCCL
+- [ ] AMD ROCm backend (RX 7600 / gfx1102 target)
+  - [x] Add gfx1102 to ROCm build offload-arch flags (`crates/rocm/build.rs`)
+  - [x] Add gfx1102 to hip_tern build with WSL2 detection (`crates/hip_tern/build.rs`)
+  - [x] Fix hip_tern attention kernel per-key scoring (`kernels/hip_tern/hip_tern_kernel.cpp`)
+  - [x] Add WSL2 detection in build scripts and runtime error messages
+  - [x] Add WSL2 + RX 7600 setup documentation (`docs/WSL2_ROCM.md`)
+  - [ ] Implement GPU quantized matmul kernels (fused_bit1_matmul on GPU)
+  - [ ] Implement GPU ternary attention kernel (hip_tern_kernel integration)
+  - [ ] GPU memory management for model weights (streaming, prefetch)
+  - [ ] Benchmark GPU vs CPU inference throughput
 
 ## Phase 5: Advanced 1-bit Techniques
 
