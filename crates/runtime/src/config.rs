@@ -1,6 +1,74 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Architecture {
+    #[default]
+    Llama,
+    Mistral,
+    Gpt2,
+    Phi,
+    Qwen2,
+    Qwen3,
+    Custom(String),
+}
+
+impl std::fmt::Display for Architecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Architecture::Llama => write!(f, "Llama"),
+            Architecture::Mistral => write!(f, "Mistral"),
+            Architecture::Gpt2 => write!(f, "Gpt2"),
+            Architecture::Phi => write!(f, "Phi"),
+            Architecture::Qwen2 => write!(f, "Qwen2"),
+            Architecture::Qwen3 => write!(f, "Qwen3"),
+            Architecture::Custom(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl Architecture {
+    pub fn from_huggingface(config: &Value) -> Option<Self> {
+        if let Some(archs) = config.get("architectures").and_then(|v| v.as_array()) {
+            for arch in archs {
+                if let Some(s) = arch.as_str() {
+                    return Some(match s {
+                        "LlamaForCausalLM" | "LlamaModel" => Architecture::Llama,
+                        "MistralForCausalLM" | "MistralModel" => Architecture::Mistral,
+                        "GPT2LMHeadModel" | "GPT2Model" => Architecture::Gpt2,
+                        "PhiForCausalLM" | "PhiModel" => Architecture::Phi,
+                        "Qwen2ForCausalLM" | "Qwen2Model" => Architecture::Qwen2,
+                        "Qwen3ForCausalLM" | "Qwen3Model" => Architecture::Qwen3,
+                        other => Architecture::Custom(other.to_string()),
+                    });
+                }
+            }
+        }
+        config.get("model_type").and_then(|v| v.as_str()).map(|s| match s {
+            "llama" => Architecture::Llama,
+            "mistral" => Architecture::Mistral,
+            "gpt2" => Architecture::Gpt2,
+            "phi" => Architecture::Phi,
+            "qwen2" => Architecture::Qwen2,
+            "qwen3" => Architecture::Qwen3,
+            other => Architecture::Custom(other.to_string()),
+        })
+    }
+
+    /// Map a GGUF `general.architecture` string to an `Architecture`.
+    pub fn from_gguf(s: &str) -> Self {
+        match s {
+            "llama" => Architecture::Llama,
+            "mistral" => Architecture::Mistral,
+            "gpt2" => Architecture::Gpt2,
+            "phi" | "phi2" => Architecture::Phi,
+            "qwen2" => Architecture::Qwen2,
+            "qwen3" => Architecture::Qwen3,
+            other => Architecture::Custom(other.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub vocab_size: usize,
@@ -23,6 +91,9 @@ pub struct ModelConfig {
     /// `None` means no scaling (standard RoPE).
     #[serde(default)]
     pub rope_scaling: Option<RopeScaling>,
+    /// The model architecture (Llama, Mistral, Gpt2, Phi, Qwen2, etc.).
+    #[serde(default)]
+    pub architecture: Architecture,
 }
 
 /// RoPE scaling configuration for extended context windows.
@@ -69,6 +140,7 @@ impl ModelConfig {
             tie_word_embeddings: false,
             sub_ln: false,
             rope_scaling: None,
+            architecture: Architecture::Llama,
         }
     }
 
@@ -86,6 +158,7 @@ impl ModelConfig {
             tie_word_embeddings: false,
             sub_ln: false,
             rope_scaling: None,
+            architecture: Architecture::Llama,
         }
     }
 
@@ -143,6 +216,8 @@ impl ModelConfig {
             }
         });
 
+        let architecture = Architecture::from_huggingface(&v).unwrap_or(Architecture::Llama);
+
         Ok(Self {
             vocab_size,
             hidden_size,
@@ -156,6 +231,7 @@ impl ModelConfig {
             tie_word_embeddings,
             sub_ln,
             rope_scaling,
+            architecture,
         })
     }
 }
@@ -203,5 +279,120 @@ mod tests {
 
         let config = ModelConfig::from_huggingface_json(json).unwrap();
         assert!(config.rope_scaling.is_none());
+    }
+
+    #[test]
+    fn test_architecture_parsing_llama() {
+        let json = r#"{
+            "architectures": ["LlamaForCausalLM"],
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 4096,
+            "rope_theta": 10000.0
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Llama);
+    }
+
+    #[test]
+    fn test_architecture_parsing_mistral() {
+        let json = r#"{
+            "architectures": ["MistralForCausalLM"],
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 4096,
+            "rope_theta": 10000.0
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Mistral);
+    }
+
+    #[test]
+    fn test_architecture_parsing_gpt2() {
+        let json = r#"{
+            "architectures": ["GPT2LMHeadModel"],
+            "vocab_size": 50257,
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 12,
+            "intermediate_size": 3072,
+            "layer_norm_eps": 1e-5,
+            "max_position_embeddings": 1024
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Gpt2);
+    }
+
+    #[test]
+    fn test_architecture_parsing_phi() {
+        let json = r#"{
+            "architectures": ["PhiForCausalLM"],
+            "vocab_size": 32000,
+            "hidden_size": 2560,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 10240,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 2048,
+            "rope_theta": 1000000.0
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Phi);
+    }
+
+    #[test]
+    fn test_architecture_parsing_qwen2() {
+        let json = r#"{
+            "architectures": ["Qwen2ForCausalLM"],
+            "vocab_size": 151936,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 32768,
+            "rope_theta": 1000000.0
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Qwen2);
+    }
+
+    #[test]
+    fn test_architecture_parsing_model_type_fallback() {
+        let json = r#"{
+            "model_type": "mistral",
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 4096
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Mistral);
+    }
+
+    #[test]
+    fn test_architecture_from_gguf() {
+        assert_eq!(Architecture::from_gguf("llama"), Architecture::Llama);
+        assert_eq!(Architecture::from_gguf("mistral"), Architecture::Mistral);
+        assert_eq!(Architecture::from_gguf("gpt2"), Architecture::Gpt2);
+        assert_eq!(Architecture::from_gguf("phi"), Architecture::Phi);
+        assert_eq!(Architecture::from_gguf("qwen2"), Architecture::Qwen2);
     }
 }

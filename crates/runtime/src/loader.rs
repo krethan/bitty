@@ -452,6 +452,181 @@ pub enum WeightTarget {
     Unknown(String),
 }
 
+/// A trait implemented by all architecture-specific weight mappers.
+pub trait WeightMapper {
+    /// Map a SafeTensors (or GGUF-style) weight name to a model weight target.
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget;
+}
+
+/// Mistral weight mapper. Mistral uses the same weight layout as LLaMA
+/// (`model.layers.N.self_attn.q_proj.weight` etc.), so it delegates to
+/// [`LlamaWeightMapper`].
+pub struct MistralWeightMapper;
+
+impl WeightMapper for MistralWeightMapper {
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget {
+        LlamaWeightMapper::map_weight(name, config)
+    }
+}
+
+/// GPT-2 weight mapper.
+///
+/// GPT-2 uses:
+/// - `transformer.wte.weight` — token embeddings
+/// - `transformer.ln_f.weight` — final LayerNorm
+/// - `lm_head.weight` — LM head
+/// - `transformer.h.N.attn.c_attn.weight` — combined Q/K/V projection
+/// - `transformer.h.N.attn.c_proj.weight` — attention output
+/// - `transformer.h.N.mlp.c_fc.weight` — FFN gate/up
+/// - `transformer.h.N.mlp.c_proj.weight` — FFN down
+/// - `transformer.h.N.ln_1.weight` — attention norm
+/// - `transformer.h.N.ln_2.weight` — FFN norm
+pub struct Gpt2WeightMapper;
+
+impl Gpt2WeightMapper {
+    fn parse_gpt2_layer_index(name: &str) -> Option<usize> {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[2].parse::<usize>().ok();
+        }
+        None
+    }
+
+    fn strip_gpt2_layer_prefix(name: &str) -> String {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[3..].join(".");
+        }
+        name.to_string()
+    }
+}
+
+impl WeightMapper for Gpt2WeightMapper {
+    fn map_weight(name: &str, _config: &crate::config::ModelConfig) -> WeightTarget {
+        if name == "transformer.wte.weight" || name == "wte" || name == "model.embed_tokens.weight" {
+            return WeightTarget::Embedding;
+        }
+        if name == "transformer.ln_f.weight" || name == "model.norm.weight" || name == "norm" {
+            return WeightTarget::FinalNorm;
+        }
+        if name == "lm_head.weight" {
+            return WeightTarget::LmHead;
+        }
+
+        let layer_idx = Self::parse_gpt2_layer_index(name);
+        if let Some(layer_idx) = layer_idx {
+            let weight_name = Self::strip_gpt2_layer_prefix(name);
+            return match weight_name.as_str() {
+                "attn.c_attn.weight" => WeightTarget::AttentionQ { layer_idx },
+                "attn.c_attn.bias" => WeightTarget::AttentionQ { layer_idx },
+                "attn.c_proj.weight" => WeightTarget::AttentionO { layer_idx },
+                "mlp.c_fc.weight" => WeightTarget::FfnUp { layer_idx },
+                "mlp.c_proj.weight" => WeightTarget::FfnDown { layer_idx },
+                "ln_1.weight" => WeightTarget::AttnNorm { layer_idx },
+                "ln_2.weight" => WeightTarget::FfnNorm { layer_idx },
+                _ => WeightTarget::Unknown(name.to_string()),
+            };
+        }
+
+        WeightTarget::Unknown(name.to_string())
+    }
+}
+
+/// Phi (phi-1/phi-2) weight mapper.
+///
+/// Phi-1/phi-2 use:
+/// - `transformer.embd.wte.weight` — token embeddings
+/// - `transformer.ln_f.weight` — final LayerNorm
+/// - `lm_head.weight` — LM head
+/// - `transformer.h.N.attn.q_proj.weight` — query
+/// - `transformer.h.N.attn.k_proj.weight` — key
+/// - `transformer.h.N.attn.v_proj.weight` — value
+/// - `transformer.h.N.attn.dense.weight` — attention output
+/// - `transformer.h.N.mlp.fc1.weight` — FFN up
+/// - `transformer.h.N.mlp.fc2.weight` — FFN down
+/// - `transformer.h.N.ln.weight` — pre-attention norm
+///
+/// Phi-3 uses the LLaMA layout (`model.layers.N.*`).
+pub struct PhiWeightMapper;
+
+impl PhiWeightMapper {
+    fn parse_phi_layer_index(name: &str) -> Option<usize> {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[2].parse::<usize>().ok();
+        }
+        None
+    }
+
+    fn strip_phi_layer_prefix(name: &str) -> String {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[3..].join(".");
+        }
+        name.to_string()
+    }
+}
+
+impl WeightMapper for PhiWeightMapper {
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget {
+        if name == "transformer.embd.wte.weight" || name == "model.embed_tokens.weight" {
+            return WeightTarget::Embedding;
+        }
+        if name == "transformer.ln_f.weight" || name == "model.norm.weight" || name == "norm" {
+            return WeightTarget::FinalNorm;
+        }
+        if name == "lm_head.weight" || name == "model.lm_head.weight" {
+            return WeightTarget::LmHead;
+        }
+
+        let layer_idx = Self::parse_phi_layer_index(name);
+        if let Some(layer_idx) = layer_idx {
+            let weight_name = Self::strip_phi_layer_prefix(name);
+            return match weight_name.as_str() {
+                "attn.q_proj.weight" | "self_attn.q_proj.weight" => WeightTarget::AttentionQ { layer_idx },
+                "attn.k_proj.weight" | "self_attn.k_proj.weight" => WeightTarget::AttentionK { layer_idx },
+                "attn.v_proj.weight" | "self_attn.v_proj.weight" => WeightTarget::AttentionV { layer_idx },
+                "attn.dense.weight" | "attn.o_proj.weight" | "self_attn.o_proj.weight" => {
+                    WeightTarget::AttentionO { layer_idx }
+                }
+                "mlp.fc1.weight" | "mlp.gate_proj.weight" => WeightTarget::FfnUp { layer_idx },
+                "mlp.fc2.weight" | "mlp.down_proj.weight" => WeightTarget::FfnDown { layer_idx },
+                "ln.weight" | "input_layernorm.weight" => WeightTarget::AttnNorm { layer_idx },
+                "post_attention_layernorm.weight" => WeightTarget::FfnNorm { layer_idx },
+                _ => WeightTarget::Unknown(name.to_string()),
+            };
+        }
+
+        // Fall back to LLaMA layout for phi-3 and compatible checkpoints.
+        LlamaWeightMapper::map_weight(name, config)
+    }
+}
+
+/// Qwen (qwen2/qwen3) weight mapper. Uses the LLaMA layout.
+pub struct QwenWeightMapper;
+
+impl WeightMapper for QwenWeightMapper {
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget {
+        LlamaWeightMapper::map_weight(name, config)
+    }
+}
+
+/// Dispatch to the correct weight mapper based on the model architecture.
+pub fn map_weight_for_architecture(
+    name: &str,
+    config: &crate::config::ModelConfig,
+) -> WeightTarget {
+    use crate::config::Architecture;
+    match &config.architecture {
+        Architecture::Llama => LlamaWeightMapper::map_weight(name, config),
+        Architecture::Mistral => MistralWeightMapper::map_weight(name, config),
+        Architecture::Gpt2 => Gpt2WeightMapper::map_weight(name, config),
+        Architecture::Phi => PhiWeightMapper::map_weight(name, config),
+        Architecture::Qwen2 | Architecture::Qwen3 => QwenWeightMapper::map_weight(name, config),
+        Architecture::Custom(_) => LlamaWeightMapper::map_weight(name, config),
+    }
+}
+
 /// Load weights from a SafeTensors file into a `Model`.
 ///
 /// Iterates all tensors in the file, maps each name to a model weight via
@@ -467,7 +642,7 @@ pub fn load_safetensors_weights(
     let mut stats = LoadingStats::default();
 
     for name in loader.tensor_names() {
-        let target = LlamaWeightMapper::map_weight(name, config);
+        let target = map_weight_for_architecture(name, config);
         let tensor = match loader.load_tensor(name) {
             Ok(t) => t,
             Err(e) => {
@@ -1061,6 +1236,151 @@ mod tests {
         file
     }
 
+    fn create_gpt2_safetensors() -> Vec<u8> {
+        let config = crate::config::ModelConfig::tiny_test();
+        let mut tensors: Vec<(String, Vec<f32>, Vec<usize>)> = Vec::new();
+
+        tensors.push((
+            "transformer.wte.weight".into(),
+            vec![0.2; config.vocab_size * config.hidden_size],
+            vec![config.vocab_size, config.hidden_size],
+        ));
+        tensors.push((
+            "transformer.ln_f.weight".into(),
+            vec![1.0; config.hidden_size],
+            vec![config.hidden_size],
+        ));
+        tensors.push((
+            "lm_head.weight".into(),
+            vec![0.3; config.vocab_size * config.hidden_size],
+            vec![config.vocab_size, config.hidden_size],
+        ));
+
+        for i in 0..config.num_layers {
+            let h = config.hidden_size;
+            let kv = config.num_kv_heads() * config.head_dim();
+            let inter = config.intermediate_size;
+
+            tensors.push((
+                format!("transformer.h.{}.attn.c_attn.weight", i),
+                vec![0.01; h * 3 * kv],
+                vec![3 * kv, h],
+            ));
+            tensors.push((
+                format!("transformer.h.{}.attn.c_proj.weight", i),
+                vec![0.02; kv * h],
+                vec![kv, h],
+            ));
+            tensors.push((
+                format!("transformer.h.{}.mlp.c_fc.weight", i),
+                vec![0.03; inter * h],
+                vec![inter, h],
+            ));
+            tensors.push((
+                format!("transformer.h.{}.mlp.c_proj.weight", i),
+                vec![0.04; h * inter],
+                vec![h, inter],
+            ));
+            tensors.push((
+                format!("transformer.h.{}.ln_1.weight", i),
+                vec![1.0; h],
+                vec![h],
+            ));
+            tensors.push((
+                format!("transformer.h.{}.ln_2.weight", i),
+                vec![1.0; h],
+                vec![h],
+            ));
+        }
+
+        let mut header_map = serde_json::Map::new();
+        let mut data_blob = Vec::new();
+        let mut offset = 0usize;
+
+        for (name, data, shape) in &tensors {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let len = bytes.len();
+            header_map.insert(
+                name.clone(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": shape,
+                    "data_offsets": [offset, offset + len]
+                }),
+            );
+            data_blob.extend_from_slice(&bytes);
+            offset += len;
+        }
+
+        let header = serde_json::Value::Object(header_map);
+        let header_str = serde_json::to_string(&header).unwrap();
+        let header_bytes = header_str.as_bytes();
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        file.extend_from_slice(header_bytes);
+        file.extend_from_slice(&data_blob);
+        file
+    }
+
+    #[test]
+    fn test_load_gpt2_weights_into_model_end_to_end() {
+        let data = create_gpt2_safetensors();
+        let loader = SafeTensorsLoader::from_bytes(&data).unwrap();
+        let mut config = crate::config::ModelConfig::tiny_test();
+        config.architecture = crate::config::Architecture::Gpt2;
+
+        let mut model = crate::model::Model::new(config.clone());
+        let stats = load_safetensors_weights(&mut model, &loader, &config, None);
+
+        // embedding + ln_f + lm_head + 2 layers * (2 attn + 2 ffn + 2 ln) = 3 + 12 = 15
+        assert_eq!(stats.loaded, 15, "all GPT-2 weights should load");
+        assert!(stats.skipped.is_empty());
+
+        // Verify weights landed in the right place.
+        let emb = model.embedding.weight.as_f32_slice();
+        assert!(emb.iter().all(|&x| (x - 0.2).abs() < 1e-6), "embedding from wte");
+
+        let norm = model.norm.weight.as_f32_slice();
+        assert!(norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "final norm from ln_f");
+
+        let lm = model.lm_head.weight.as_f32_slice();
+        assert!(lm.iter().all(|&x| (x - 0.3).abs() < 1e-6), "lm_head from lm_head.weight");
+
+        // The first layer's q_proj should carry the c_attn weights.
+        let q = model.layers[0].attention.q_proj.weight.as_f32_slice();
+        assert!(q.iter().all(|&x| (x - 0.01).abs() < 1e-6), "q_proj from c_attn");
+
+        let o = model.layers[0].attention.o_proj.weight.as_f32_slice();
+        assert!(o.iter().all(|&x| (x - 0.02).abs() < 1e-6), "o_proj from c_proj");
+
+        let up = model.layers[1].ffn_up.weight.as_f32_slice();
+        assert!(up.iter().all(|&x| (x - 0.03).abs() < 1e-6), "ffn_up from c_fc");
+
+        let down = model.layers[1].ffn_down.weight.as_f32_slice();
+        assert!(down.iter().all(|&x| (x - 0.04).abs() < 1e-6), "ffn_down from c_proj");
+    }
+
+    #[test]
+    fn test_load_gpt2_with_ternary_quantize_end_to_end() {
+        let data = create_gpt2_safetensors();
+        let loader = SafeTensorsLoader::from_bytes(&data).unwrap();
+        let mut config = crate::config::ModelConfig::tiny_test();
+        config.architecture = crate::config::Architecture::Gpt2;
+
+        let mut model = crate::model::Model::new(config.clone());
+        let stats = load_safetensors_weights(&mut model, &loader, &config, Some("ternary"));
+
+        assert_eq!(stats.loaded, 15);
+        assert!(model.bit_layers.is_some(), "quantized layers should be present");
+        assert_eq!(
+            model.bit_layers.as_ref().unwrap().len(),
+            config.num_layers,
+            "all layers quantized"
+        );
+        assert!(model.layers.is_empty(), "fp32 layers consumed after quantize");
+    }
+
     #[test]
     fn test_load_safetensors_weights_into_model() {
         let data = create_tiny_safetensors();
@@ -1094,5 +1414,137 @@ mod tests {
         let stats = load_safetensors_weights(&mut model, &loader, &config, Some("ternary"));
 
         assert_eq!(stats.loaded, 20);
+    }
+
+    #[test]
+    fn test_gpt2_weight_mapper() {
+        let config = crate::config::ModelConfig::tiny_test();
+
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.wte.weight", &config),
+            WeightTarget::Embedding
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.ln_f.weight", &config),
+            WeightTarget::FinalNorm
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("lm_head.weight", &config),
+            WeightTarget::LmHead
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_attn.weight", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_proj.weight", &config),
+            WeightTarget::AttentionO { layer_idx: 0 }
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.5.mlp.c_fc.weight", &config),
+            WeightTarget::FfnUp { layer_idx: 5 }
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.5.mlp.c_proj.weight", &config),
+            WeightTarget::FfnDown { layer_idx: 5 }
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.3.ln_1.weight", &config),
+            WeightTarget::AttnNorm { layer_idx: 3 }
+        );
+        assert_eq!(
+            Gpt2WeightMapper::map_weight("transformer.h.3.ln_2.weight", &config),
+            WeightTarget::FfnNorm { layer_idx: 3 }
+        );
+        assert!(matches!(
+            Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_attn.bias", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_phi_weight_mapper() {
+        let config = crate::config::ModelConfig::tiny_test();
+
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.embd.wte.weight", &config),
+            WeightTarget::Embedding
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.ln_f.weight", &config),
+            WeightTarget::FinalNorm
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("lm_head.weight", &config),
+            WeightTarget::LmHead
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.0.attn.q_proj.weight", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.1.attn.k_proj.weight", &config),
+            WeightTarget::AttentionK { layer_idx: 1 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.2.attn.v_proj.weight", &config),
+            WeightTarget::AttentionV { layer_idx: 2 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.3.attn.dense.weight", &config),
+            WeightTarget::AttentionO { layer_idx: 3 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.4.mlp.fc1.weight", &config),
+            WeightTarget::FfnUp { layer_idx: 4 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.4.mlp.fc2.weight", &config),
+            WeightTarget::FfnDown { layer_idx: 4 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("transformer.h.5.ln.weight", &config),
+            WeightTarget::AttnNorm { layer_idx: 5 }
+        );
+    }
+
+    #[test]
+    fn test_architecture_dispatch() {
+        let config = crate::config::ModelConfig::tiny_test();
+
+        // Default tiny_test is Llama
+        assert_eq!(
+            map_weight_for_architecture("model.layers.0.self_attn.q_proj.weight", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+
+        // GPT-2 config dispatches to Gpt2WeightMapper
+        let mut gpt2_config = config.clone();
+        gpt2_config.architecture = crate::config::Architecture::Gpt2;
+        assert_eq!(
+            map_weight_for_architecture("transformer.h.0.attn.c_attn.weight", &gpt2_config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+        // Llama-style names are Unknown for GPT-2
+        assert!(matches!(
+            map_weight_for_architecture("model.layers.0.self_attn.q_proj.weight", &gpt2_config),
+            WeightTarget::Unknown(_)
+        ));
+
+        // Phi config dispatches to PhiWeightMapper
+        let mut phi_config = config.clone();
+        phi_config.architecture = crate::config::Architecture::Phi;
+        assert_eq!(
+            map_weight_for_architecture("transformer.h.0.attn.q_proj.weight", &phi_config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+
+        // Mistral and Qwen dispatch to Llama layout
+        let mut mistral_config = config.clone();
+        mistral_config.architecture = crate::config::Architecture::Mistral;
+        assert_eq!(
+            map_weight_for_architecture("model.layers.0.self_attn.q_proj.weight", &mistral_config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
     }
 }

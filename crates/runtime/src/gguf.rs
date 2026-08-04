@@ -571,6 +571,7 @@ fn f16_to_f32(h: u16) -> f32 {
 impl GgufLoader {
     pub fn config_from_metadata(&self) -> Option<ModelConfig> {
         let arch = self.metadata_str("general.architecture")?;
+        let architecture = crate::config::Architecture::from_gguf(arch);
 
         let prefix = format!("{}.", arch);
         let meta = self.metadata();
@@ -622,6 +623,7 @@ impl GgufLoader {
             tie_word_embeddings,
             sub_ln: false,
             rope_scaling: None,
+            architecture,
         })
     }
 }

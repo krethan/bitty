@@ -142,6 +142,7 @@ pub(crate) fn synthetic_config() -> bitllm_runtime::ModelConfig {
         tie_word_embeddings: false,
         sub_ln: false,
         rope_scaling: None,
+        architecture: bitllm_runtime::Architecture::Llama,
     }
 }
 
