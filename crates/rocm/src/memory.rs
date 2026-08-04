@@ -116,6 +116,41 @@ impl GpuBuffer {
             Err(RocmError::NotAvailable)
         }
     }
+
+    #[cfg(feature = "rocm")]
+    pub fn copy_from_host_async(&self, data: &[u8], stream: rocm_rs::hip::hipStream_t) -> Result<()> {
+        if data.len() > self.size {
+            return Err(RocmError::TransferFailed(format!(
+                "Source size {} exceeds buffer size {}",
+                data.len(),
+                self.size
+            )));
+        }
+        #[cfg(feature = "rocm")]
+        {
+            unsafe {
+                let err = rocm_rs::hip::hipMemcpyAsync(
+                    self.ptr as *mut std::ffi::c_void,
+                    data.as_ptr() as *const std::ffi::c_void,
+                    data.len(),
+                    rocm_rs::hip::hipMemcpyKind::hipMemcpyHostToDevice,
+                    stream,
+                );
+                if err != rocm_rs::hip::hipError_t::hipSuccess {
+                    return Err(RocmError::TransferFailed(format!(
+                        "hipMemcpyAsync H2D failed: {:?}",
+                        err
+                    )));
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(feature = "rocm"))]
+        {
+            let _ = (data, stream);
+            Err(RocmError::NotAvailable)
+        }
+    }
 }
 
 impl Drop for GpuBuffer {
@@ -126,5 +161,56 @@ impl Drop for GpuBuffer {
                 rocm_rs::hip::hipFree(self.ptr as *mut std::ffi::c_void);
             }
         }
+    }
+}
+
+/// Streams model weights from host RAM to GPU VRAM with double-buffering
+/// and prefetch support for overlapping compute with data transfer.
+#[derive(Debug)]
+#[cfg(feature = "rocm")]
+pub struct GpuWeightStreamer {
+    /// Host-side RAM buffer (pinned for faster PCIe transfer)
+    pub host_ram: Vec<u8>,
+    /// Double-buffered VRAM regions
+    pub vram_buffers: Vec<GpuBuffer>,
+    current_buffer: usize,
+    /// PCIe transfer width in bytes per layer
+    pub pcie_width: usize,
+}
+
+#[cfg(feature = "rocm")]
+impl GpuWeightStreamer {
+    pub fn new(total_bytes: usize, num_buffers: usize) -> Result<Self> {
+        let host_ram = vec![0u8; total_bytes];
+        let mut vram_buffers = Vec::with_capacity(num_buffers);
+        for _ in 0..num_buffers {
+            vram_buffers.push(GpuBuffer::new(total_bytes / num_buffers)?);
+        }
+        Ok(Self {
+            host_ram,
+            vram_buffers,
+            current_buffer: 0,
+            pcie_width: 8,
+        })
+    }
+
+    /// Queue a layer's weights for async transfer to the current VRAM buffer.
+    pub fn queue_layer(&mut self, layer_idx: usize, stream: rocm_rs::hip::hipStream_t) -> Result<()> {
+        let offset = layer_idx * self.pcie_width;
+        let src = &self.host_ram[offset..offset + self.pcie_width];
+        let dst = &self.vram_buffers[self.current_buffer];
+        dst.copy_from_host_async(src, stream)?;
+        Ok(())
+    }
+
+    /// Swap to the next VRAM buffer (must be called after the previous buffer's
+    /// async transfer has completed via stream synchronization).
+    pub fn swap_buffer(&mut self) {
+        self.current_buffer = 1 - self.current_buffer;
+    }
+
+    /// Get a reference to the current VRAM buffer for kernel access.
+    pub fn current_buffer(&self) -> &GpuBuffer {
+        &self.vram_buffers[self.current_buffer]
     }
 }

@@ -4,6 +4,8 @@ pub mod ops;
 
 pub use device::{Device, DeviceInfo};
 pub use memory::GpuBuffer;
+#[cfg(feature = "rocm")]
+pub use memory::GpuWeightStreamer;
 pub use ops::GpuOps;
 
 #[derive(Debug, thiserror::Error)]

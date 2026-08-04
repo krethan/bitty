@@ -259,6 +259,85 @@ impl GpuOps {
         }
     }
 
+    pub fn bit1_matmul(
+        a: &GpuBuffer,
+        w: &GpuBuffer,
+        scales: &GpuBuffer,
+        out: &GpuBuffer,
+        m: usize,
+        n: usize,
+        k: usize,
+        group_size: i32,
+        outlier_mask: Option<&GpuBuffer>,
+        outlier_vals: Option<&GpuBuffer>,
+    ) -> Result<()> {
+        #[cfg(feature = "rocm")]
+        {
+            unsafe {
+                let block_x = 32u32;
+                let block_y = 32u32;
+                let grid_x = ((n + 31) / 32) as u32;
+                let grid_y = ((m + 31) / 32) as u32;
+
+                let kernel_name = if group_size > 0 {
+                    "bitllm_bit1_matmul_grouped"
+                } else {
+                    "bitllm_bit1_matmul"
+                };
+
+                let mut args: Vec<*mut std::ffi::c_void> = vec![
+                    a.ptr() as *mut std::ffi::c_void,
+                    w.ptr() as *mut std::ffi::c_void,
+                    scales.ptr() as *mut std::ffi::c_void,
+                    out.ptr() as *mut std::ffi::c_void,
+                    &m as *const usize as *mut std::ffi::c_void,
+                    &n as *const usize as *mut std::ffi::c_void,
+                    &k as *const usize as *mut std::ffi::c_void,
+                    &group_size as *const i32 as *mut std::ffi::c_void,
+                ];
+
+                let (mask_ptr, vals_ptr) = match (outlier_mask, outlier_vals) {
+                    (Some(mask), Some(vals)) => {
+                        args.push(mask.ptr() as *mut std::ffi::c_void);
+                        args.push(vals.ptr() as *mut std::ffi::c_void);
+                        (mask.ptr(), vals.ptr())
+                    }
+                    _ => {
+                        args.push(std::ptr::null_mut());
+                        args.push(std::ptr::null_mut());
+                        (std::ptr::null_mut(), std::ptr::null_mut())
+                    }
+                };
+
+                let err = rocm_rs::hip::hipLaunchKernel(
+                    Self::get_kernel(kernel_name)?,
+                    rocm_rs::hip::dim3 {
+                        x: grid_x,
+                        y: grid_y,
+                        z: 1,
+                    },
+                    rocm_rs::hip::dim3 {
+                        x: block_x,
+                        y: block_y,
+                        z: 1,
+                    },
+                    args.as_mut_ptr(),
+                    args.len() * std::mem::size_of::<*mut std::ffi::c_void>(),
+                    rocm_rs::hip::hipStream_t::std_stream,
+                );
+                if err != rocm_rs::hip::hipError_t::hipSuccess {
+                    return Err(RocmError::KernelLaunchFailed(format!("{:?}", err)));
+                }
+            }
+            Ok(())
+        }
+        #[cfg(not(feature = "rocm"))]
+        {
+            let _ = (a, w, scales, out, m, n, k, group_size, outlier_mask, outlier_vals);
+            Err(RocmError::NotAvailable)
+        }
+    }
+
     fn launch_binary_kernel(
         name: &str,
         a: &GpuBuffer,

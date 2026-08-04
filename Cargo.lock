@@ -207,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "bitllm-cognition",
  "bitllm-quantization",
+ "bitllm-rocm",
  "bitllm-runtime",
  "bitllm-tensor",
  "bitllm-train",

@@ -18,9 +18,14 @@ bitllm-quantization = { path = "../crates/quantization" }
 bitllm-runtime = { path = "../crates/runtime" }
 bitllm-cognition = { path = "../crates/cognition" }
 bitllm-train = { path = "../crates/train" }
+bitllm-rocm = { path = "../crates/rocm", optional = true }
 rand = "0.8"
 rayon.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
+
+[features]
+default = []
+rocm = ["bitllm-rocm"]
