@@ -59,10 +59,10 @@ break `cargo test --workspace`.
   - [x] Fix hip_tern attention kernel per-key scoring (`kernels/hip_tern/hip_tern_kernel.cpp`)
   - [x] Add WSL2 detection in build scripts and runtime error messages
   - [x] Add WSL2 + RX 7600 setup documentation (`docs/WSL2_ROCM.md`)
-  - [ ] Implement GPU quantized matmul kernels (fused_bit1_matmul on GPU)
-  - [ ] Implement GPU ternary attention kernel (hip_tern_kernel integration)
-  - [ ] GPU memory management for model weights (streaming, prefetch)
-  - [ ] Benchmark GPU vs CPU inference throughput
+  - [x] Implement GPU quantized matmul kernels (fused_bit1_matmul on GPU)
+  - [x] Implement GPU ternary attention kernel (hip_tern_kernel integration)
+  - [x] GPU memory management for model weights (streaming, prefetch)
+  - [x] Benchmark GPU vs CPU inference throughput
 
 ## Phase 5: Advanced 1-bit Techniques
 
