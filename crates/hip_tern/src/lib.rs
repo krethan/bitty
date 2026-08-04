@@ -12,8 +12,7 @@
 mod mercurial;
 
 pub use mercurial::{
-    DeltaBinaryKVCache, MercurialBuilder, MercurialConfig, MercurialModel, StochasticFlip,
-    TernaryQuantizer, TrainingConfig,
+    DeltaBinaryKVCache, MercurialBuilder, MercurialConfig, MercurialModel, TernaryQuantizer,
 };
 
 #[cfg(feature = "hip")]

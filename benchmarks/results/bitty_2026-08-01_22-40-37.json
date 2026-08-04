@@ -1,0 +1,110 @@
+{
+  "benchmark_version": "1.0.0",
+  "git_commit": "21b3e6d",
+  "machine": {
+    "os": "linux",
+    "cpu_model": "AMD Ryzen 7 3700X 8-Core Processor",
+    "ram_gb": 15.56854248046875
+  },
+  "timestamp": "2026-08-01_22:40:37",
+  "kernels": [
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 64,
+      "time_ms": 0.000026879999999999987,
+      "gbps": 0.5952380952380956,
+      "tbit_per_sec": 0.004761904761904764
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 256,
+      "time_ms": 0.00003823000000000004,
+      "gbps": 1.6740779492545104,
+      "tbit_per_sec": 0.013392623594036084
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 1024,
+      "time_ms": 0.000031650000000000004,
+      "gbps": 8.088467614533965,
+      "tbit_per_sec": 0.06470774091627172
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 4096,
+      "time_ms": 0.000053999999999999964,
+      "gbps": 18.962962962962976,
+      "tbit_per_sec": 0.15170370370370378
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 64,
+      "time_ms": 0.000027859999999999998,
+      "gbps": 1.1486001435750182,
+      "tbit_per_sec": 0.009188801148600146
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 256,
+      "time_ms": 0.000039990000000000015,
+      "gbps": 3.2008002000500113,
+      "tbit_per_sec": 0.025606401600400088
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 1024,
+      "time_ms": 0.00008915,
+      "gbps": 5.743129556926528,
+      "tbit_per_sec": 0.04594503645541222
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 4096,
+      "time_ms": 0.00027550000000000003,
+      "gbps": 7.433756805807621,
+      "tbit_per_sec": 0.05947005444646097
+    }
+  ],
+  "precision": [],
+  "perplexity": [],
+  "memory": [],
+  "train": [],
+  "qat": [
+    {
+      "name": "BIT1",
+      "naive_mse": 47.62752151489258,
+      "qat_mse": 26.598098754882812,
+      "mse_ratio": 0.5584607124328613,
+      "ppl_naive": 102.68347836486902,
+      "ppl_qat": 52.030256199229655,
+      "steps": 200
+    },
+    {
+      "name": "BIT1-A8",
+      "naive_mse": 47.815826416015625,
+      "qat_mse": 25.901809692382812,
+      "mse_ratio": 0.5416995286941528,
+      "ppl_naive": 102.67951472465798,
+      "ppl_qat": 63.92896170738024,
+      "steps": 200
+    },
+    {
+      "name": "BIT1-OL",
+      "naive_mse": 45.72373962402344,
+      "qat_mse": 16.46233367919922,
+      "mse_ratio": 0.360039085149765,
+      "ppl_naive": 93.80228512189895,
+      "ppl_qat": 109.38888477891686,
+      "steps": 200
+    },
+    {
+      "name": "BIT1-OL-A8",
+      "naive_mse": 45.809234619140625,
+      "qat_mse": 17.912885665893555,
+      "mse_ratio": 0.3910321891307831,
+      "ppl_naive": 93.81435161697932,
+      "ppl_qat": 47.45743659024236,
+      "steps": 200
+    }
+  ]
+}

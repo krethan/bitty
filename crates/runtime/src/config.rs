@@ -13,6 +13,25 @@ pub struct ModelConfig {
     pub max_seq_len: usize,
     pub rope_theta: f32,
     pub tie_word_embeddings: bool,
+    /// BitNet b1.58-style mixed-precision residual: when true, quantized
+    /// blocks use `SubLN(x) = x - RMSNorm(x)` as their input (bounded
+    /// activations for W1A8) and add the residual back in f32. The residual
+    /// stream is never quantized.
+    #[serde(default)]
+    pub sub_ln: bool,
+    /// RoPE scaling configuration for extended context (LLaMA-2/3).
+    /// `None` means no scaling (standard RoPE).
+    #[serde(default)]
+    pub rope_scaling: Option<RopeScaling>,
+}
+
+/// RoPE scaling configuration for extended context windows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RopeScaling {
+    /// Scaling type: "linear", "dynamic", or "llama3" (LLaMA-3 specific).
+    pub r#type: String,
+    /// Scaling factor (e.g., 2.0 for 2x context extension).
+    pub factor: f32,
 }
 
 impl ModelConfig {
@@ -48,6 +67,8 @@ impl ModelConfig {
             max_seq_len: 2048,
             rope_theta: 10000.0,
             tie_word_embeddings: false,
+            sub_ln: false,
+            rope_scaling: None,
         }
     }
 
@@ -63,6 +84,8 @@ impl ModelConfig {
             max_seq_len: 128,
             rope_theta: 10000.0,
             tie_word_embeddings: false,
+            sub_ln: false,
+            rope_scaling: None,
         }
     }
 
@@ -105,10 +128,20 @@ impl ModelConfig {
         let max_seq_len = get_u64("max_position_embeddings")
             .or_else(|| get_u64("max_seq_len"))
             .unwrap_or(2048);
-        let rope_theta = get_f32("rope_theta")
-            .or_else(|| get_f32("rope_scaling"))
-            .unwrap_or(10000.0);
+        let rope_theta = get_f32("rope_theta").unwrap_or(10000.0);
         let tie_word_embeddings = get_bool("tie_word_embeddings").unwrap_or(false);
+        let sub_ln = get_bool("sub_ln").unwrap_or(false);
+
+        // Parse rope_scaling as an object with "type" and "factor" fields
+        let rope_scaling = v.get("rope_scaling").and_then(|rs| {
+            if rs.is_object() {
+                let rtype = rs.get("type").and_then(|t| t.as_str()).unwrap_or("linear").to_string();
+                let factor = rs.get("factor").and_then(|f| f.as_f64()).unwrap_or(1.0) as f32;
+                Some(RopeScaling { r#type: rtype, factor })
+            } else {
+                None
+            }
+        });
 
         Ok(Self {
             vocab_size,
@@ -121,6 +154,54 @@ impl ModelConfig {
             max_seq_len,
             rope_theta,
             tie_word_embeddings,
+            sub_ln,
+            rope_scaling,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rope_scaling_parsing() {
+        let json = r#"{
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 4096,
+            "rope_theta": 10000.0,
+            "rope_scaling": {
+                "type": "linear",
+                "factor": 2.0
+            }
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert!(config.rope_scaling.is_some());
+        let rs = config.rope_scaling.unwrap();
+        assert_eq!(rs.r#type, "linear");
+        assert_eq!(rs.factor, 2.0);
+    }
+
+    #[test]
+    fn test_rope_scaling_missing() {
+        let json = r#"{
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "intermediate_size": 11008,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 2048,
+            "rope_theta": 10000.0
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert!(config.rope_scaling.is_none());
     }
 }

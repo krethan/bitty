@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
+use crate::loader::{load_model, ModelLoadOptions};
+use crate::metrics::Metrics;
 use crate::server::{create_router, AppState};
-use crate::worker::InferenceWorker;
+use crate::worker::{InferenceWorker, DEFAULT_QUEUE_CAPACITY};
 use bitllm_runtime::{Model, ModelConfig};
 
 #[derive(Parser)]
@@ -49,6 +51,10 @@ pub enum Commands {
 
         #[arg(long, default_value_t = 0)]
         gpu: i32,
+
+        /// Bounded inference queue depth; requests beyond this get a 503.
+        #[arg(long, default_value_t = DEFAULT_QUEUE_CAPACITY)]
+        queue_depth: usize,
     },
     Bench {
         #[arg(short, long, default_value = "tiny")]
@@ -74,6 +80,7 @@ pub async fn run() -> anyhow::Result<()> {
             config_json,
             quantize,
             gpu,
+            queue_depth,
         } => {
             let device = if gpu >= 0 {
                 if bitllm_rocm::is_available() {
@@ -90,90 +97,17 @@ pub async fn run() -> anyhow::Result<()> {
                 bitllm_tensor::Device::Cpu
             };
 
-            let (model, model_name_resolved) = if let Some(gguf_path) = &gguf {
-                log::info!("Loading GGUF model from {}", gguf_path);
-                let loader = bitllm_runtime::gguf::GgufLoader::load(gguf_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to load GGUF: {}", e))?;
-                let model_config = loader.config_from_metadata().ok_or_else(|| {
-                    anyhow::anyhow!("Could not extract config from GGUF metadata")
-                })?;
-                let name = model_name
-                    .or_else(|| loader.metadata_str("general.name").map(|s| s.to_string()))
-                    .unwrap_or_else(|| "bitllm-model".to_string());
-                log::info!(
-                    "GGUF config: {} layers, {} hidden, {} heads",
-                    model_config.num_layers,
-                    model_config.hidden_size,
-                    model_config.num_heads
-                );
-                let mut model = Model::new(model_config);
-                load_gguf_weights(&mut model, &loader, device);
-                (model, name)
-            } else if let Some(st_path) = &safetensors {
-                log::info!("Loading SafeTensors model from {}", st_path);
-                let loader = bitllm_runtime::SafeTensorsLoader::load(st_path)
-                    .map_err(|e| anyhow::anyhow!("Failed to load SafeTensors: {}", e))?;
-
-                // Load config from --config-json, or look for config.json next to the .safetensors file
-                let model_config = if let Some(cj_path) = &config_json {
-                    let json = std::fs::read_to_string(cj_path)
-                        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", cj_path, e))?;
-                    ModelConfig::from_huggingface_json(&json)
-                        .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?
-                } else {
-                    let config_path = std::path::Path::new(st_path)
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join("config.json");
-                    if config_path.exists() {
-                        let json = std::fs::read_to_string(&config_path)
-                            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", config_path.display(), e))?;
-                        ModelConfig::from_huggingface_json(&json)
-                            .map_err(|e| anyhow::anyhow!("Failed to parse config: {}", e))?
-                    } else {
-                        log::warn!("No config.json found, using tiny_test defaults");
-                        ModelConfig::tiny_test()
-                    }
-                };
-
-                let name = model_name
-                    .or_else(|| {
-                        // Try to get model name from SafeTensors metadata
-                        loader.metadata().get("model_name").cloned()
-                    })
-                    .unwrap_or_else(|| "bitllm-model".to_string());
-
-                log::info!(
-                    "SafeTensors config: {} layers, {} hidden, {} heads",
-                    model_config.num_layers,
-                    model_config.hidden_size,
-                    model_config.num_heads
-                );
-
-                let mut model = Model::new(model_config.clone());
-                let stats = bitllm_runtime::load_safetensors_weights(
-                    &mut model,
-                    &loader,
-                    &model_config,
-                    quantize.as_deref(),
-                );
-                log::info!(
-                    "Loaded {} tensors, skipped {}",
-                    stats.loaded,
-                    stats.skipped.len()
-                );
-                if !stats.skipped.is_empty() {
-                    log::debug!("Skipped tensors: {:?}", stats.skipped);
-                }
-                (model, name)
-            } else {
-                let model_config = match config.as_str() {
-                    "small" => ModelConfig::llama_small(),
-                    _ => ModelConfig::tiny_test(),
-                };
-                let name = model_name.unwrap_or_else(|| "bitllm-model".to_string());
-                (Model::new(model_config), name)
+            let opts = ModelLoadOptions {
+                gguf,
+                safetensors,
+                config_json,
+                config,
+                quantize,
+                device,
             };
+            let loaded = load_model(&opts)?;
+            let model_name_resolved = model_name.unwrap_or(loaded.name);
+            let source = loaded.source;
 
             let tok = match tokenizer {
                 Some(path) => {
@@ -186,10 +120,17 @@ pub async fn run() -> anyhow::Result<()> {
                 }
             };
 
+            let metrics = Arc::new(Metrics::new());
             let state = Arc::new(AppState {
-                worker: InferenceWorker::new(model),
+                worker: InferenceWorker::with_capacity(
+                    loaded.model,
+                    Arc::clone(&metrics),
+                    queue_depth,
+                ),
                 tokenizer: Arc::new(tok),
-                model_name: model_name_resolved,
+                metrics,
+                model_name: Arc::new(tokio::sync::RwLock::new(model_name_resolved)),
+                model_source: Arc::new(tokio::sync::RwLock::new(source)),
             });
 
             let router = create_router(state);
@@ -197,7 +138,10 @@ pub async fn run() -> anyhow::Result<()> {
             log::info!("BitLLM server starting on {}", addr);
 
             let listener = tokio::net::TcpListener::bind(&addr).await?;
-            axum::serve(listener, router).await?;
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown_signal())
+                .await?;
+            log::info!("BitLLM server stopped");
         }
         Commands::Bench { model, iterations } => {
             println!(
@@ -227,6 +171,31 @@ pub async fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Wait for SIGINT or SIGTERM, then let in-flight requests drain.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => log::info!("SIGINT received, draining in-flight requests"),
+        _ = terminate => log::info!("SIGTERM received, draining in-flight requests"),
+    }
+}
+
 fn create_byte_tokenizer() -> bitllm_tokenizer::BpeTokenizer {
     let mut vocab = std::collections::HashMap::new();
     for i in 0u32..256 {
@@ -234,100 +203,4 @@ fn create_byte_tokenizer() -> bitllm_tokenizer::BpeTokenizer {
         vocab.insert(ch.to_string(), i);
     }
     bitllm_tokenizer::BpeTokenizer::from_vocab_and_merges(vocab, vec![])
-}
-
-fn load_gguf_weights(
-    model: &mut bitllm_runtime::Model,
-    loader: &bitllm_runtime::gguf::GgufLoader,
-    device: bitllm_tensor::Device,
-) {
-    use bitllm_runtime::gguf::GgufWeightMapper;
-    use bitllm_runtime::loader::WeightTarget;
-
-    for name in loader.tensor_names() {
-        let target = GgufWeightMapper::map_weight(name);
-        let tensor = match loader.load_tensor(name) {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("Failed to load tensor '{}': {}", name, e);
-                continue;
-            }
-        };
-
-        let tensor = if device != bitllm_tensor::Device::Cpu {
-            tag_tensor_device(tensor, device)
-        } else {
-            tensor
-        };
-
-        match target {
-            WeightTarget::Embedding => {
-                model.embedding.weight = tensor;
-            }
-            WeightTarget::FinalNorm => {
-                model.norm.weight = tensor;
-            }
-            WeightTarget::LmHead => {
-                model.lm_head.weight = tensor;
-            }
-            WeightTarget::AttentionQ { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.q_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionK { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.k_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionV { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.v_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionO { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.o_proj.weight = tensor;
-                }
-            }
-            WeightTarget::FfnGate { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_gate.weight = tensor;
-                }
-            }
-            WeightTarget::FfnDown { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_down.weight = tensor;
-                }
-            }
-            WeightTarget::FfnUp { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_up.weight = tensor;
-                }
-            }
-            WeightTarget::AttnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attn_norm.weight = tensor;
-                }
-            }
-            WeightTarget::FfnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_norm.weight = tensor;
-                }
-            }
-            WeightTarget::Unknown(unknown_name) => {
-                log::debug!("Skipping unknown tensor: {}", unknown_name);
-            }
-        }
-    }
-}
-
-fn tag_tensor_device(
-    tensor: bitllm_tensor::Tensor,
-    device: bitllm_tensor::Device,
-) -> bitllm_tensor::Tensor {
-    use bitllm_tensor::Tensor;
-    let mut t = Tensor::on_device(tensor.shape(), tensor.dtype(), device);
-    t.data_mut().copy_from_slice(tensor.data());
-    t
 }

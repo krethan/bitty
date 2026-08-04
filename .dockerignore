@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Build artifacts
+target/
+**/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Test results
+benchmarks/results/
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+/tmp/
+
+# Benchmarks source (not needed in runtime image)
+benchmarks/src/

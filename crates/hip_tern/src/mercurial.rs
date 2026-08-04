@@ -114,8 +114,8 @@ pub struct MercurialModel {
 impl MercurialModel {
     /// Create a new Mercurial model
     pub fn new(config: MercurialConfig) -> Result<Self, String> {
-        // Calculate total bits needed
-        let total_bits = config.num_layers * config.hidden_size * config.hidden_size;
+        // Calculate total bits needed (2 bits per weight in packed form)
+        let total_bits = config.num_layers * config.hidden_size * config.hidden_size * 2;
 
         // Create HIP kernel
         let hip_kernel = HipTernKernel::new(config.d64)?;
@@ -138,11 +138,11 @@ impl MercurialModel {
     pub fn init_weights(&mut self, fp_weights: Vec<Vec<f32>>) {
         assert_eq!(fp_weights.len(), self.config.num_layers);
 
-        for (layer_idx, (quantizer, weights)) in
+        for (layer_idx, (quantizer, mut weights)) in
             self.quantizers.iter_mut().zip(fp_weights).enumerate()
         {
-            // Quantize the weights
-            quantizer.quantize(&mut weights.clone());
+            // Quantize the weights in place
+            quantizer.quantize(&mut weights);
 
             // Pack to 2-bit format for PCIe streaming
             let packed = quantizer.pack_to_2bit(&weights);
@@ -219,77 +219,6 @@ impl MercurialBuilder {
 
     pub fn build(self) -> Result<MercurialModel, String> {
         MercurialModel::new(self.config)
-    }
-}
-
-/// Training configuration for Project Mercurial
-#[derive(Debug, Clone)]
-pub struct TrainingConfig {
-    pub learning_rate: f32,
-    pub beta1: f32,
-    pub beta2: f32,
-    pub weight_decay: f32,
-    pub epsilon: f32,
-    pub grad_clip: f32,
-    pub noise_scale: f32,
-    pub noise_anneal_steps: u64,
-}
-
-impl Default for TrainingConfig {
-    fn default() -> Self {
-        Self {
-            learning_rate: 1.5e-4,
-            beta1: 0.9,
-            beta2: 0.98,
-            weight_decay: 0.01,
-            epsilon: 1e-8,
-            grad_clip: 1.0,
-            noise_scale: 0.05,
-            noise_anneal_steps: 1_000_000_000_000, // 1 trillion tokens
-        }
-    }
-}
-
-/// Stochastic Flip Regularizer
-pub struct StochasticFlip {
-    config: TrainingConfig,
-    step: u64,
-    grad_var_ema: Vec<f32>,
-}
-
-impl StochasticFlip {
-    pub fn new(config: TrainingConfig, num_params: usize) -> Self {
-        Self {
-            config,
-            step: 0,
-            grad_var_ema: vec![0.0; num_params],
-        }
-    }
-
-    /// Compute the current noise scale based on annealing schedule
-    pub fn current_noise_scale(&self) -> f32 {
-        let progress = (self.step as f64) / (self.config.noise_anneal_steps as f64);
-        self.config.noise_scale * (1.0 - progress).cos() as f32
-    }
-
-    /// Apply stochastic flip to gradients
-    pub fn apply(&mut self, grads: &mut [f32]) {
-        let noise_scale = self.current_noise_scale();
-
-        for (i, g) in grads.iter_mut().enumerate() {
-            // Update EMA of gradient variance
-            self.grad_var_ema[i] = 0.99 * self.grad_var_ema[i] + 0.01 * g.powi(2);
-
-            // Compute noise
-            let noise_std = noise_scale * self.grad_var_ema[i].sqrt();
-            let noise = rand::random::<f32>() * noise_std;
-
-            // Apply noise and clip
-            *g += noise;
-            *g = g.clamp(-2.0 * noise_std, 2.0 * noise_std);
-        }
-
-        self.step += 1;
     }
 }
 
@@ -377,17 +306,104 @@ mod tests {
     }
 
     #[test]
+    fn test_pack_2bit_roundtrip() {
+        let quantizer = TernaryQuantizer::new();
+        let weights = vec![
+            -quantizer.alpha,
+            quantizer.beta,
+            0.0,
+            quantizer.beta,
+            0.0,
+            -quantizer.alpha,
+            quantizer.beta,
+            -quantizer.alpha,
+        ];
+
+        let packed = quantizer.pack_to_2bit(&weights);
+        assert_eq!(packed.len(), weights.len().div_ceil(4));
+
+        // Decode the exact packed representation:
+        //   0b01 -> -alpha, 0b00 -> 0.0, 0b10 -> beta
+        let mut decoded = Vec::new();
+        for byte in &packed {
+            for slot in 0..4 {
+                let bits = (byte >> (slot * 2)) & 0b11;
+                decoded.push(match bits {
+                    0b00 => 0.0,
+                    0b01 => -quantizer.alpha,
+                    0b10 => quantizer.beta,
+                    _ => unreachable!("0b11 is not a valid ternary encoding"),
+                });
+            }
+        }
+        decoded.truncate(weights.len());
+        assert_eq!(decoded, weights);
+    }
+
+    #[test]
+    fn test_init_weights_quantizes_then_packs() {
+        let mut model = MercurialBuilder::new()
+            .num_layers(2)
+            .hidden_size(16)
+            .build()
+            .expect("model builds");
+
+        // Values hit every ternary bucket; a quantize-on-clone bug would leave
+        // +1.5/-1.5 in the buffer (never a valid encoding).
+        let hidden = 16usize;
+        let mut layer = Vec::with_capacity(hidden * hidden);
+        for i in 0..hidden * hidden {
+            layer.push(match i % 4 {
+                0 => 1.5,
+                1 => -1.5,
+                2 => 0.25,
+                _ => -0.25,
+            });
+        }
+        model.init_weights(vec![layer.clone(), layer]);
+
+        let weights_per_layer = hidden * hidden;
+        let packed_len = weights_per_layer.div_ceil(4);
+        assert_eq!(
+            model.weight_streamer.weights_ram.len(),
+            2 * packed_len,
+            "weights_ram must hold all packed layers"
+        );
+
+        let mut saw_beta = false;
+        let mut saw_neg_alpha = false;
+        for (layer_idx, quantizer) in model.quantizers.iter().enumerate() {
+            let start = layer_idx * packed_len;
+            let packed = &model.weight_streamer.weights_ram[start..start + packed_len];
+            for (i, byte) in packed.iter().enumerate() {
+                for slot in 0..4 {
+                    let bits = (byte >> (slot * 2)) & 0b11;
+                    let val = match bits {
+                        0b00 => 0.0,
+                        0b01 => -quantizer.alpha,
+                        0b10 => quantizer.beta,
+                        _ => unreachable!("0b11 is not a valid ternary encoding"),
+                    };
+                    assert!(
+                        val == quantizer.beta || val == 0.0 || val == -quantizer.alpha,
+                        "byte {} slot {} decoded to invalid value {:?}",
+                        i,
+                        slot,
+                        val
+                    );
+                    saw_beta |= val == quantizer.beta;
+                    saw_neg_alpha |= val == -quantizer.alpha;
+                }
+            }
+        }
+        assert!(saw_beta, "no +beta weights found after init_weights");
+        assert!(saw_neg_alpha, "no -alpha weights found after init_weights");
+    }
+
+    #[test]
     fn test_mercurial_config() {
         let config = MercurialConfig::default();
         assert_eq!(config.num_layers, 120);
         assert_eq!(config.hidden_size, 4096);
-    }
-
-    #[test]
-    fn test_training_config() {
-        let config = TrainingConfig::default();
-        assert_eq!(config.learning_rate, 1.5e-4);
-        assert_eq!(config.beta1, 0.9);
-        assert_eq!(config.beta2, 0.98);
     }
 }

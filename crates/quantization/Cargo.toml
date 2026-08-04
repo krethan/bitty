@@ -15,5 +15,6 @@ rand.workspace = true
 rayon.workspace = true
 num_cpus.workspace = true
 byteorder.workspace = true
+wide.workspace = true
 
 bitllm-tensor = { path = "../tensor" }

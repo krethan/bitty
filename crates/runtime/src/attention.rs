@@ -13,52 +13,84 @@ pub struct RoPECache {
     pub head_dim: usize,
     pub max_seq_len: usize,
     pub theta: f32,
+    pub scaling_factor: f32,
 }
 
 impl RoPECache {
     pub fn new(max_seq_len: usize, head_dim: usize, theta: f32) -> Self {
+        Self::with_scaling(max_seq_len, head_dim, theta, 1.0)
+    }
+
+    pub fn with_scaling(max_seq_len: usize, head_dim: usize, theta: f32, scaling_factor: f32) -> Self {
         let half = head_dim / 2;
         let mut cos = vec![0.0f32; max_seq_len * half];
         let mut sin = vec![0.0f32; max_seq_len * half];
         for pos in 0..max_seq_len {
             for i in 0..half {
                 let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
-                let angle = pos as f32 * freq;
+                // Apply scaling: for linear scaling, divide position by factor
+                let scaled_pos = pos as f32 / scaling_factor;
+                let angle = scaled_pos * freq;
                 cos[pos * half + i] = angle.cos();
                 sin[pos * half + i] = angle.sin();
             }
         }
-        Self { cos, sin, head_dim, max_seq_len, theta }
+        Self { cos, sin, head_dim, max_seq_len, theta, scaling_factor }
     }
 }
 
+/// KV cache with a leading batch (slot) dimension.
+///
+/// Tensors are laid out as `[batch, num_kv_heads, max_seq_len, head_dim]`.
+/// Slot 0 of a batch-1 cache matches the previous single-sequence layout for
+/// all positions, so single-sequence kernels can index slot 0 unchanged.
 pub struct KvCache {
     pub k: Vec<Tensor>,
     pub v: Vec<Tensor>,
-    pub seq_len: usize,
+    pub batch: usize,
+    pub seq_lens: Vec<usize>,
 }
 
 impl KvCache {
     pub fn new(
         num_layers: usize,
+        batch: usize,
         max_seq_len: usize,
         num_kv_heads: usize,
         head_dim: usize,
     ) -> Self {
         let k = (0..num_layers)
-            .map(|_| Tensor::zeros(&[num_kv_heads, max_seq_len, head_dim], DType::F32))
+            .map(|_| {
+                Tensor::zeros(
+                    &[batch, num_kv_heads, max_seq_len, head_dim],
+                    DType::F32,
+                )
+            })
             .collect();
         let v = (0..num_layers)
-            .map(|_| Tensor::zeros(&[num_kv_heads, max_seq_len, head_dim], DType::F32))
+            .map(|_| {
+                Tensor::zeros(
+                    &[batch, num_kv_heads, max_seq_len, head_dim],
+                    DType::F32,
+                )
+            })
             .collect();
-        Self { k, v, seq_len: 0 }
+        Self {
+            k,
+            v,
+            batch,
+            seq_lens: vec![0; batch],
+        }
     }
 
-    pub fn update(&mut self, layer_idx: usize, new_k: &Tensor, new_v: &Tensor, position: usize) {
+    /// Copy a contiguous `[num_heads, seq_len, head_dim]` block into the cache
+    /// slot at `position`. `num_heads` must equal the number of KV heads.
+    pub fn update(&mut self, layer_idx: usize, slot: usize, new_k: &Tensor, new_v: &Tensor, position: usize) {
         let num_heads = new_k.shape()[0];
         let seq_len = new_k.shape()[1];
         let head_dim = new_k.shape()[2];
-        let cache_seq_len = self.k[layer_idx].shape()[1];
+        let cache_num_kv_heads = self.k[layer_idx].shape()[1];
+        let cache_seq_len = self.k[layer_idx].shape()[2];
 
         let k_data = new_k.as_f32_slice();
         let v_data = new_v.as_f32_slice();
@@ -68,7 +100,42 @@ impl KvCache {
         for h in 0..num_heads {
             for pos in 0..seq_len {
                 let src_base = h * seq_len * head_dim + pos * head_dim;
-                let dst_base = h * cache_seq_len * head_dim + (position + pos) * head_dim;
+                let dst_base = (slot * cache_num_kv_heads + h) * cache_seq_len * head_dim
+                    + (position + pos) * head_dim;
+                cache_k[dst_base..dst_base + head_dim]
+                    .copy_from_slice(&k_data[src_base..src_base + head_dim]);
+                cache_v[dst_base..dst_base + head_dim]
+                    .copy_from_slice(&v_data[src_base..src_base + head_dim]);
+            }
+        }
+    }
+
+    /// Copy a batched block into the cache. `new_k`/`new_v` are laid out as
+    /// `[num_heads, batch, head_dim]` (one current token per batch slot) and
+    /// `positions` holds each slot's absolute position.
+    pub fn update_batch(
+        &mut self,
+        layer_idx: usize,
+        new_k: &Tensor,
+        new_v: &Tensor,
+        positions: &[usize],
+    ) {
+        let num_heads = new_k.shape()[0];
+        let batch = new_k.shape()[1];
+        let head_dim = new_k.shape()[2];
+        let cache_num_kv_heads = self.k[layer_idx].shape()[1];
+        let cache_seq_len = self.k[layer_idx].shape()[2];
+
+        let k_data = new_k.as_f32_slice();
+        let v_data = new_v.as_f32_slice();
+        let cache_k = self.k[layer_idx].as_f32_slice_mut();
+        let cache_v = self.v[layer_idx].as_f32_slice_mut();
+
+        for (b, &position) in positions.iter().enumerate() {
+            for h in 0..num_heads {
+                let src_base = (h * batch + b) * head_dim;
+                let dst_base = (b * cache_num_kv_heads + h) * cache_seq_len * head_dim
+                    + position * head_dim;
                 cache_k[dst_base..dst_base + head_dim]
                     .copy_from_slice(&k_data[src_base..src_base + head_dim]);
                 cache_v[dst_base..dst_base + head_dim]
@@ -82,19 +149,45 @@ impl KvCache {
     }
 
     /// Returns references to the KV cache tensors and the number of
-    /// positions that are actually populated.  This avoids copying the
-    /// entire cache on every attention call.
-    pub fn get_kv_used(&self, layer_idx: usize) -> (&Tensor, &Tensor, usize) {
-        let kv_len = self.seq_len.max(1);
+    /// positions actually populated for the given slot. This avoids copying
+    /// the entire cache on every attention call.
+    pub fn get_kv_used(&self, layer_idx: usize, slot: usize) -> (&Tensor, &Tensor, usize) {
+        let kv_len = self.seq_lens[slot].max(1);
         (&self.k[layer_idx], &self.v[layer_idx], kv_len)
     }
 
-    pub fn get_seq_len(&self) -> usize {
-        self.seq_len
+    /// Number of positions populated per slot.
+    pub fn kv_lens(&self) -> &[usize] {
+        &self.seq_lens
     }
 
-    pub fn advance(&mut self, n: usize) {
-        self.seq_len += n;
+    pub fn seq_len(&self, slot: usize) -> usize {
+        self.seq_lens[slot]
+    }
+
+    /// Mark `len` positions starting at `position` as populated for a slot.
+    /// Call before running a forward so attention sees the full written range.
+    pub fn reserve(&mut self, slot: usize, position: usize, len: usize) {
+        self.seq_lens[slot] = position + len;
+    }
+
+    pub fn clear(&mut self) {
+        for s in self.seq_lens.iter_mut() {
+            *s = 0;
+        }
+    }
+
+    /// Reset a single slot's populated length to zero so the slot can be
+    /// reused by a new sequence (continuous batching).
+    pub fn clear_slot(&mut self, slot: usize) {
+        self.seq_lens[slot] = 0;
+    }
+
+    /// Roll a slot's populated length back to `len` (no larger than its
+    /// current length). Used by speculative decoding to discard rejected
+    /// draft tokens; the stale KV rows are simply ignored and overwritten.
+    pub fn truncate(&mut self, slot: usize, len: usize) {
+        self.seq_lens[slot] = len.min(self.seq_lens[slot]);
     }
 }
 
@@ -147,14 +240,95 @@ impl Attention {
         position: usize,
         gpu: Option<&GpuContext>,
     ) -> Tensor {
-        self.forward_gpu_with_rope_cache(input, cache, layer_idx, position, gpu, None)
+        self.forward_gpu_with_rope_cache(input, cache, layer_idx, 0, position, gpu, None)
     }
 
+    /// Batched decode: `input` is `[batch, hidden_size]` (one current token per
+    /// batch slot). Each row is RoPE'd at its own absolute `positions[b]`, its
+    /// K/V is written into its cache slot, and it attends only to its own
+    /// slot's populated positions.
+    pub fn forward_batch_gpu(
+        &self,
+        input: &Tensor,
+        mut cache: Option<&mut KvCache>,
+        layer_idx: usize,
+        positions: &[usize],
+        gpu: Option<&GpuContext>,
+        rope_cache: Option<&RoPECache>,
+    ) -> Tensor {
+        let batch = input.shape()[0];
+        let hidden_size = self.config.hidden_size;
+        let num_heads = self.config.num_heads;
+        let num_kv_heads = self.config.num_kv_heads();
+        let head_dim = self.config.head_dim();
+        let theta = self.config.rope_theta;
+
+        let q = self.q_proj.forward_gpu(input, gpu);
+        let k = self.k_proj.forward_gpu(input, gpu);
+        let v = self.v_proj.forward_gpu(input, gpu);
+
+        let mut q_reshaped = reshape_for_attention(&q, num_heads, head_dim);
+        let mut k_reshaped = reshape_for_attention(&k, num_kv_heads, head_dim);
+        let v_reshaped = reshape_for_attention(&v, num_kv_heads, head_dim);
+
+        apply_rotary_emb_batch(&mut q_reshaped, positions, head_dim, theta, rope_cache);
+        apply_rotary_emb_batch(&mut k_reshaped, positions, head_dim, theta, rope_cache);
+
+        let max_seq_len = self.config.max_seq_len;
+        let mut scores_buf = self.scores.borrow_mut();
+        let mut acc_buf = self.acc.borrow_mut();
+        if scores_buf.len() < max_seq_len {
+            scores_buf.resize(max_seq_len, 0.0);
+        }
+        if acc_buf.len() < head_dim {
+            acc_buf.resize(head_dim, 0.0);
+        }
+
+        let output = match cache.as_mut() {
+            Some(c) => {
+                c.update_batch(layer_idx, &k_reshaped, &v_reshaped, positions);
+                let kv_lens = c.kv_lens();
+                scaled_dot_product_attention_batched(
+                    &q_reshaped,
+                    &c.k[layer_idx],
+                    &c.v[layer_idx],
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    batch,
+                    kv_lens,
+                    &mut scores_buf[..max_seq_len],
+                    &mut acc_buf[..head_dim],
+                )
+            }
+            None => {
+                let ones: Vec<usize> = vec![1; batch];
+                scaled_dot_product_attention_batched(
+                    &q_reshaped,
+                    &k_reshaped,
+                    &v_reshaped,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    batch,
+                    &ones,
+                    &mut scores_buf[..max_seq_len],
+                    &mut acc_buf[..head_dim],
+                )
+            }
+        };
+
+        let reshaped = output.reshape_owned(&[batch, hidden_size]);
+        self.o_proj.forward_gpu(&reshaped, gpu)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn forward_gpu_with_rope_cache(
         &self,
         input: &Tensor,
         mut cache: Option<&mut KvCache>,
         layer_idx: usize,
+        slot: usize,
         position: usize,
         gpu: Option<&GpuContext>,
         rope_cache: Option<&RoPECache>,
@@ -184,11 +358,10 @@ impl Attention {
         );
 
         if let Some(c) = cache.as_mut() {
-            c.update(layer_idx, &k_reshaped, &v_reshaped, position);
+            c.update(layer_idx, slot, &k_reshaped, &v_reshaped, position);
         }
-
         let (k_ref, v_ref, kv_seq_len) = match cache.as_ref() {
-            Some(c) => c.get_kv_used(layer_idx),
+            Some(c) => c.get_kv_used(layer_idx, slot),
             None => (&k_reshaped, &v_reshaped, k_reshaped.shape()[1]),
         };
 
@@ -211,6 +384,7 @@ impl Attention {
             head_dim,
             seq_len,
             kv_seq_len,
+            slot,
             &mut scores_buf[..kv_seq_len],
             &mut acc_buf[..head_dim],
         );
@@ -221,7 +395,7 @@ impl Attention {
     }
 }
 
-fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim: usize) -> Tensor {
+pub(crate) fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim: usize) -> Tensor {
     let seq_len = tensor.shape()[0];
     let mut result = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
     let src_slice = tensor.as_f32_slice();
@@ -239,6 +413,7 @@ fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim: usize) -> 
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scaled_dot_product_attention(
     q: &Tensor,
     k: &Tensor,
@@ -248,10 +423,18 @@ fn scaled_dot_product_attention(
     head_dim: usize,
     seq_len: usize,
     kv_seq_len: usize,
+    slot: usize,
     scores: &mut [f32],
     acc: &mut [f32],
 ) -> Tensor {
-    let kv_stride = k.shape()[1];
+    // Cache tensors are [batch, num_kv_heads, max_seq_len, head_dim]; a bare
+    // (non-cached) k/v is [num_heads, seq_len, head_dim].
+    let batch_layout = k.shape().len() == 4;
+    let kv_stride = if batch_layout {
+        k.shape()[2]
+    } else {
+        k.shape()[1]
+    };
     let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
 
@@ -264,13 +447,18 @@ fn scaled_dot_product_attention(
 
     for h in 0..num_heads {
         let kv_h = h / kv_groups;
+        let head_base = if batch_layout {
+            (slot * num_kv_heads + kv_h) * kv_stride * head_dim
+        } else {
+            kv_h * kv_stride * head_dim
+        };
         for pos_q in 0..seq_len {
             let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
             let mut max_val: f32 = f32::NEG_INFINITY;
 
             for pos_k in 0..kv_seq_len {
-                let k_row = &k_slice[kv_h * kv_stride * head_dim + pos_k * head_dim..][..head_dim];
+                let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = dot / scale;
                 scores[pos_k] = score;
@@ -286,10 +474,150 @@ fn scaled_dot_product_attention(
 
             acc[..head_dim].fill(0.0);
             for (pos_k, score) in scores[..kv_seq_len].iter().enumerate() {
-                let v_row = &v_slice[kv_h * kv_stride * head_dim + pos_k * head_dim..][..head_dim];
+                let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
                 simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
             }
             let out_row = &mut out_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
+            out_row.copy_from_slice(&acc[..head_dim]);
+        }
+    }
+
+    output
+}
+
+/// Reused by the QAT activation recorder (`crate::record`) which needs the
+/// bare (non-batched) attention output without owning private buffers.
+pub(crate) fn scaled_dot_product_attention_owned(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    seq_len: usize,
+    kv_seq_len: usize,
+) -> Tensor {
+    let scale = (head_dim as f32).sqrt();
+    let kv_groups = num_heads / num_kv_heads;
+
+    let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
+    let q_slice = q.as_f32_slice();
+    let k_slice = k.as_f32_slice();
+    let v_slice = v.as_f32_slice();
+    let out_slice = output.as_f32_slice_mut();
+
+    for h in 0..num_heads {
+        let kv_h = h / kv_groups;
+        let head_base = kv_h * kv_seq_len * head_dim;
+        for pos_q in 0..seq_len {
+            let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
+
+            let mut max_val: f32 = f32::NEG_INFINITY;
+            for pos_k in 0..kv_seq_len {
+                let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
+                let dot = simd::f32_dot(q_row, k_row);
+                let score = dot / scale;
+                if score > max_val {
+                    max_val = score;
+                }
+            }
+            let mut exp_scores: Vec<f32> = (0..kv_seq_len)
+                .map(|pos_k| {
+                    let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
+                    let dot = simd::f32_dot(q_row, k_row) / scale;
+                    (dot - max_val).exp()
+                })
+                .collect();
+            let sum_exp: f32 = exp_scores.iter().sum();
+            let inv_sum = 1.0 / sum_exp;
+            for s in exp_scores.iter_mut() {
+                *s *= inv_sum;
+            }
+
+            let out_row = &mut out_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
+            out_row.fill(0.0);
+            for (pos_k, weight) in exp_scores.iter().enumerate() {
+                let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
+                for d in 0..head_dim {
+                    out_row[d] += weight * v_row[d];
+                }
+            }
+        }
+    }
+
+    output
+}
+
+/// Batched decode SDPA. `q` is `[num_heads, batch, head_dim]`. `k`/`v` are
+/// either the cache tensors (`[batch, num_kv_heads, max_seq_len, head_dim]`)
+/// with one `kv_lens[b]` per slot, or bare `[num_kv_heads, batch, head_dim]`
+/// blocks where each row attends only to itself.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scaled_dot_product_attention_batched(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    num_heads: usize,
+    num_kv_heads: usize,
+    head_dim: usize,
+    batch: usize,
+    kv_lens: &[usize],
+    scores: &mut [f32],
+    acc: &mut [f32],
+) -> Tensor {
+    let cache_layout = k.shape().len() == 4;
+    let kv_stride = if cache_layout {
+        k.shape()[2]
+    } else {
+        k.shape()[1]
+    };
+    let scale = (head_dim as f32).sqrt();
+    let kv_groups = num_heads / num_kv_heads;
+
+    let mut output = Tensor::zeros(&[num_heads, batch, head_dim], DType::F32);
+
+    let q_slice = q.as_f32_slice();
+    let k_slice = k.as_f32_slice();
+    let v_slice = v.as_f32_slice();
+    let out_slice = output.as_f32_slice_mut();
+
+    for h in 0..num_heads {
+        let kv_h = h / kv_groups;
+        for b in 0..batch {
+            let kv_len = if cache_layout {
+                kv_lens[b].min(kv_stride).max(1)
+            } else {
+                1
+            };
+            let q_row = &q_slice[(h * batch + b) * head_dim..][..head_dim];
+            let head_base = if cache_layout {
+                (b * num_kv_heads + kv_h) * kv_stride * head_dim
+            } else {
+                (kv_h * batch + b) * head_dim
+            };
+
+            let mut max_val: f32 = f32::NEG_INFINITY;
+            for pos_k in 0..kv_len {
+                let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
+                let dot = simd::f32_dot(q_row, k_row);
+                let score = dot / scale;
+                scores[pos_k] = score;
+                if score > max_val {
+                    max_val = score;
+                }
+            }
+
+            simd::f32_add_scalar_inplace(&mut scores[..kv_len], -max_val);
+            simd::f32_exp_inplace(&mut scores[..kv_len]);
+            let sum_exp: f32 = simd::f32_sum(&scores[..kv_len]);
+            simd::f32_scale_inplace(&mut scores[..kv_len], 1.0 / sum_exp);
+
+            acc[..head_dim].fill(0.0);
+            for (pos_k, score) in scores[..kv_len].iter().enumerate() {
+                let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
+                simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
+            }
+            let out_row = &mut out_slice[(h * batch + b) * head_dim..][..head_dim];
             out_row.copy_from_slice(&acc[..head_dim]);
         }
     }
@@ -370,6 +698,52 @@ pub fn apply_rotary_emb_inplace_with_cache(
 ) {
     apply_rotary_inplace_inner(q, position, head_dim, theta, cache);
     apply_rotary_inplace_inner(k, position, head_dim, theta, cache);
+}
+
+/// Apply RoPE to a batched `[num_heads, batch, head_dim]` tensor, using a
+/// per-row absolute position.
+pub fn apply_rotary_emb_batch(
+    x: &mut Tensor,
+    positions: &[usize],
+    head_dim: usize,
+    theta: f32,
+    cache: Option<&RoPECache>,
+) {
+    let num_heads = x.shape()[0];
+    let batch = x.shape()[1];
+    let half = head_dim / 2;
+
+    let (cos_table, sin_table) = cache
+        .filter(|c| c.head_dim == head_dim && c.theta == theta)
+        .map(|c| (&c.cos[..], &c.sin[..]))
+        .unwrap_or((&[], &[]));
+
+    let x_slice = x.as_f32_slice_mut();
+
+    for h in 0..num_heads {
+        for (b, &position) in positions.iter().enumerate() {
+            let base = (h * batch + b) * head_dim;
+            for i in 0..half {
+                let (cos_val, sin_val) = if !cos_table.is_empty() {
+                    let idx = position * half + i;
+                    (cos_table[idx], sin_table[idx])
+                } else {
+                    let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
+                    let angle = position as f32 * freq;
+                    (angle.cos(), angle.sin())
+                };
+
+                let idx_even = base + 2 * i;
+                let idx_odd = base + 2 * i + 1;
+
+                let x_even = x_slice[idx_even];
+                let x_odd = x_slice[idx_odd];
+
+                x_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
+                x_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
+            }
+        }
+    }
 }
 
 fn apply_rotary_inplace_inner(x: &mut Tensor, position: usize, head_dim: usize, theta: f32, cache: Option<&RoPECache>) {
@@ -558,6 +932,7 @@ mod tests {
         let input = Tensor::random(&[1, hidden], DType::F32);
         let mut cache = KvCache::new(
             config.num_layers,
+            1,
             config.max_seq_len,
             config.num_kv_heads(),
             head_dim,
@@ -570,9 +945,58 @@ mod tests {
         assert_eq!(output2.shape(), &[1, hidden]);
 
         assert_eq!(
-            cache.get_seq_len(),
+            cache.seq_len(0),
             0,
             "Attention does not advance cache - Model does"
         );
+    }
+
+    #[test]
+    fn test_batched_attention_isolates_slots() {
+        let config = ModelConfig::tiny_test();
+        let hidden = config.hidden_size;
+        let head_dim = config.head_dim();
+        let num_kv_heads = config.num_kv_heads();
+
+        let attention = Attention::new(
+            Linear::new(Tensor::random(&[hidden, hidden], DType::F32), None),
+            Linear::new(
+                Tensor::random(&[hidden, num_kv_heads * head_dim], DType::F32),
+                None,
+            ),
+            Linear::new(
+                Tensor::random(&[hidden, num_kv_heads * head_dim], DType::F32),
+                None,
+            ),
+            Linear::new(Tensor::random(&[hidden, hidden], DType::F32), None),
+            config.clone(),
+        );
+
+        let batch = 3;
+        let mut cache = KvCache::new(
+            config.num_layers,
+            batch,
+            config.max_seq_len,
+            num_kv_heads,
+            head_dim,
+        );
+
+        // Each slot writes one token at its own position.
+        for b in 0..batch {
+            let input = Tensor::random(&[1, hidden], DType::F32);
+            let positions = [b];
+            attention.forward_batch_gpu(&input, Some(&mut cache), 0, &positions, None, None);
+            cache.reserve(b, b, 1);
+        }
+
+        // Slots must have independent lengths.
+        for b in 0..batch {
+            assert_eq!(cache.seq_len(b), b + 1);
+        }
+
+        let next = Tensor::random(&[batch, hidden], DType::F32);
+        let positions: Vec<usize> = (0..batch).map(|b| cache.seq_len(b)).collect();
+        let out = attention.forward_batch_gpu(&next, Some(&mut cache), 0, &positions, None, None);
+        assert_eq!(out.shape(), &[batch, hidden]);
     }
 }

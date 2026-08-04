@@ -7,6 +7,7 @@ pub mod features;
 pub mod reasoning;
 pub mod routing;
 pub mod attention;
+pub mod context_memory;
 
 pub use hypervector::HyperVector;
 pub use hnsw::BitHNSW;
@@ -17,3 +18,4 @@ pub use features::FeatureExtractor;
 pub use reasoning::ReasoningUnit;
 pub use routing::Router;
 pub use attention::SparseAttention;
+pub use context_memory::{ChunkRecord, ContextMemory, ContextMemoryConfig};

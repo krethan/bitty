@@ -1,0 +1,12 @@
+[package]
+name = "bitllm-train"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "Ternary low-rank adapters and stochastic-flip training primitives"
+
+[dependencies]
+bitllm-tensor = { path = "../tensor" }
+bitllm-quantization = { path = "../quantization" }
+bitllm-runtime = { path = "../runtime" }

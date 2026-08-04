@@ -76,6 +76,34 @@ pub struct ModelInfo {
     pub quantization: String,
 }
 
+/// Body of `POST /v1/model` (hot swap). At least one source must be present.
+#[derive(Debug, Deserialize)]
+pub struct ModelSwapRequest {
+    /// Path to a GGUF model file.
+    pub gguf: Option<String>,
+    /// Path to a SafeTensors model file.
+    pub safetensors: Option<String>,
+    /// `config.json` path (used when loading SafeTensors).
+    pub config_json: Option<String>,
+    /// Built-in config name: `"tiny"` or `"small"`.
+    pub config: Option<String>,
+    /// Optional on-load weight quantization: `"ternary"` (1-bit).
+    pub quantize: Option<String>,
+    /// Optional new model id reported by `/v1/models`.
+    pub name: Option<String>,
+}
+
+/// First frame of the WebSocket streaming protocol: a prompt plus sampling
+/// options (mirrors the OpenAI-compatible REST endpoints).
+#[derive(Debug, Deserialize)]
+pub struct WsRequest {
+    pub prompt: Option<String>,
+    pub messages: Option<Vec<ChatMessage>>,
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<usize>,
+    pub top_k: Option<usize>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ErrorResponse {
     pub error: ErrorDetail,

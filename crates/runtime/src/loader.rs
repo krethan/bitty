@@ -574,6 +574,12 @@ pub fn load_safetensors_weights(
         }
     }
 
+    // Handle tied word embeddings: if the config says to tie embeddings and
+    // the model doesn't have a separate lm_head weight, copy embedding to lm_head.
+    if config.tie_word_embeddings {
+        model.tie_embeddings();
+    }
+
     // After FP32 weights are loaded, pack linear layers into fused 1-bit kernels.
     if quantize == Some("ternary") {
         model.quantize_to_bit1();

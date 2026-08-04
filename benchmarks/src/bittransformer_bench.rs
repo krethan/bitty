@@ -16,11 +16,11 @@ fn main() {
     let hidden = config.hidden_size;
     let input = Tensor::zeros(&[batch, seq_len, hidden], DType::F32);
 
-    let mut cache = KvCache::new(config.num_layers, seq_len, config.num_kv_heads(), config.head_dim());
+    let mut cache = KvCache::new(config.num_layers, 1, seq_len, config.num_kv_heads(), config.head_dim());
 
     let start = Instant::now();
     for _ in 0..10 {
-        let _ = bit_layer.forward_gpu(&input, Some(&mut cache), 0, 0, None, None);
+        let _ = bit_layer.forward_gpu(&input, Some(&mut cache), 0, 0, 0, None, None);
     }
     let elapsed = start.elapsed().as_secs_f64();
     println!(

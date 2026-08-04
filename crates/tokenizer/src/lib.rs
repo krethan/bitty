@@ -19,6 +19,8 @@ pub enum TokenizerError {
     JsonError(#[from] serde_json::Error),
     #[error("Load error: {0}")]
     LoadError(String),
+    #[error("Protobuf error: {0}")]
+    ProtobufError(String),
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -304,6 +306,63 @@ impl BpeTokenizer {
             vocab, merges, config,
         ))
     }
+
+    /// Load a SentencePiece tokenizer from a .model file.
+    ///
+    /// SentencePiece files are protobuf-encoded. This parser extracts the vocabulary
+    /// and special tokens (BOS, EOS, UNK) but does not implement the full SentencePiece
+    /// encoding algorithm. For inference, use the HuggingFace tokenizer.json format instead.
+    pub fn load_sentencepiece<P: AsRef<Path>>(path: P) -> Result<Self, TokenizerError> {
+        let mut file = File::open(path.as_ref())?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
+        Self::from_sentencepiece_bytes(&contents)
+    }
+
+    /// Parse SentencePiece protobuf bytes and build a tokenizer.
+    pub fn from_sentencepiece_bytes(data: &[u8]) -> Result<Self, TokenizerError> {
+        let pieces = parse_sentencepiece_proto(data)?;
+
+        let mut vocab = HashMap::new();
+        let mut bos_token = None;
+        let mut eos_token = None;
+        let mut unk_token = None;
+
+        for (id, piece) in pieces.iter().enumerate() {
+            let id = id as u32;
+            vocab.insert(piece.piece.clone(), id);
+
+            // Identify special tokens by type and content
+            match piece.piece_type {
+                SentencePieceType::Control => {
+                    if piece.piece == "<s>" || piece.piece == "<BOS>" {
+                        bos_token = Some(id);
+                    } else if piece.piece == "</s>" || piece.piece == "<EOS>" {
+                        eos_token = Some(id);
+                    } else if piece.piece == "<unk>" {
+                        unk_token = Some(id);
+                    }
+                }
+                SentencePieceType::Unknown => {
+                    if unk_token.is_none() {
+                        unk_token = Some(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let config = TokenizerConfig {
+            vocab_size: vocab.len(),
+            bos_token,
+            eos_token,
+            unk_token,
+        };
+
+        // SentencePiece doesn't expose merges in the same way as BPE
+        // We create an empty merges list - encoding will use character-level fallback
+        Ok(Self::from_vocab_and_merges_with_config(vocab, Vec::new(), config))
+    }
 }
 
 pub struct SimpleTokenizer {
@@ -337,6 +396,225 @@ impl SimpleTokenizer {
     pub fn vocab_size(&self) -> usize {
         self.char_to_id.len()
     }
+}
+
+// ============================================================================
+// SentencePiece protobuf parsing
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SentencePieceType {
+    Normal = 1,
+    Unknown = 2,
+    Control = 3,
+    UserDefined = 4,
+    Unused = 5,
+    Byte = 6,
+}
+
+impl From<i32> for SentencePieceType {
+    fn from(v: i32) -> Self {
+        match v {
+            1 => SentencePieceType::Normal,
+            2 => SentencePieceType::Unknown,
+            3 => SentencePieceType::Control,
+            4 => SentencePieceType::UserDefined,
+            5 => SentencePieceType::Unused,
+            6 => SentencePieceType::Byte,
+            _ => SentencePieceType::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SentencePiecePiece {
+    piece: String,
+    score: f32,
+    piece_type: SentencePieceType,
+}
+
+/// Minimal protobuf parser for SentencePiece ModelProto messages.
+///
+/// SentencePiece .model files use protobuf encoding with the following structure:
+/// ```protobuf
+/// message ModelProto {
+///   message Piece {
+///     enum Type { NORMAL=1; UNKNOWN=2; CONTROL=3; USER_DEFINED=4; UNUSED=5; BYTE=6; }
+///     string piece = 1;
+///     float score = 2;
+///     Type type = 3;
+///   }
+///   repeated Piece pieces = 1;
+///   // ... other fields we ignore
+/// }
+/// ```
+fn parse_sentencepiece_proto(data: &[u8]) -> Result<Vec<SentencePiecePiece>, TokenizerError> {
+    let mut pieces = Vec::new();
+    let mut pos = 0;
+
+    while pos < data.len() {
+        // Read field tag
+        let (field_tag, new_pos) = read_varint(data, pos)?;
+        pos = new_pos;
+
+        let field_number = field_tag >> 3;
+        let wire_type = field_tag & 0x7;
+
+        match (field_number, wire_type) {
+            // pieces field (repeated Piece, field 1, wire type 2 = length-delimited)
+            (1, 2) => {
+                let (len, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+                let len = len as usize;
+                if pos + len > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated piece data".into()));
+                }
+                let piece_data = &data[pos..pos + len];
+                pieces.push(parse_piece(piece_data)?);
+                pos += len;
+            }
+            // Skip other fields
+            (_, 0) => {
+                // Varint
+                let (_, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+            }
+            (_, 1) => {
+                // 64-bit
+                if pos + 8 > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated 64-bit field".into()));
+                }
+                pos += 8;
+            }
+            (_, 2) => {
+                // Length-delimited
+                let (len, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+                let len = len as usize;
+                if pos + len > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated length-delimited field".into()));
+                }
+                pos += len;
+            }
+            (_, 5) => {
+                // 32-bit
+                if pos + 4 > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated 32-bit field".into()));
+                }
+                pos += 4;
+            }
+            _ => {
+                return Err(TokenizerError::ProtobufError(format!(
+                    "unknown wire type {} for field {}",
+                    wire_type, field_number
+                )));
+            }
+        }
+    }
+
+    Ok(pieces)
+}
+
+fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
+    let mut piece = String::new();
+    let mut score = 0.0f32;
+    let mut piece_type = SentencePieceType::Normal;
+    let mut pos = 0;
+
+    while pos < data.len() {
+        let (field_tag, new_pos) = read_varint(data, pos)?;
+        pos = new_pos;
+
+        let field_number = field_tag >> 3;
+        let wire_type = field_tag & 0x7;
+
+        match (field_number, wire_type) {
+            // piece (string, field 1)
+            (1, 2) => {
+                let (len, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+                let len = len as usize;
+                if pos + len > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated piece string".into()));
+                }
+                piece = String::from_utf8_lossy(&data[pos..pos + len]).to_string();
+                pos += len;
+            }
+            // score (float, field 2)
+            (2, 5) => {
+                if pos + 4 > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated score".into()));
+                }
+                score = f32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+                pos += 4;
+            }
+            // type (enum/int32, field 3)
+            (3, 0) => {
+                let (v, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+                piece_type = SentencePieceType::from(v as i32);
+            }
+            // Skip unknown fields
+            (_, 0) => {
+                let (_, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+            }
+            (_, 1) => {
+                if pos + 8 > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated 64-bit field".into()));
+                }
+                pos += 8;
+            }
+            (_, 2) => {
+                let (len, new_pos) = read_varint(data, pos)?;
+                pos = new_pos;
+                let len = len as usize;
+                if pos + len > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated length-delimited field".into()));
+                }
+                pos += len;
+            }
+            (_, 5) => {
+                if pos + 4 > data.len() {
+                    return Err(TokenizerError::ProtobufError("truncated 32-bit field".into()));
+                }
+                pos += 4;
+            }
+            _ => {
+                return Err(TokenizerError::ProtobufError(format!(
+                    "unknown wire type in piece: {} for field {}",
+                    wire_type, field_number
+                )));
+            }
+        }
+    }
+
+    Ok(SentencePiecePiece {
+        piece,
+        score,
+        piece_type,
+    })
+}
+
+fn read_varint(data: &[u8], mut pos: usize) -> Result<(u64, usize), TokenizerError> {
+    let mut result: u64 = 0;
+    let mut shift = 0;
+    loop {
+        if pos >= data.len() {
+            return Err(TokenizerError::ProtobufError("truncated varint".into()));
+        }
+        let byte = data[pos];
+        pos += 1;
+        result |= ((byte & 0x7F) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift >= 64 {
+            return Err(TokenizerError::ProtobufError("varint too long".into()));
+        }
+    }
+    Ok((result, pos))
 }
 
 #[cfg(test)]
@@ -501,5 +779,52 @@ mod tests {
     fn test_load_json_missing_model() {
         let json = r#"{"not_model": {}}"#;
         assert!(BpeTokenizer::from_json(json).is_err());
+    }
+
+    #[test]
+    fn test_sentencepiece_proto_parsing() {
+        // Create a minimal SentencePiece protobuf with 3 pieces:
+        // - "<s>" (control, BOS)
+        // - "hello" (normal)
+        // - "</s>" (control, EOS)
+        let mut data = Vec::new();
+
+        // Helper to write a varint
+        fn write_varint(buf: &mut Vec<u8>, mut val: u64) {
+            while val >= 0x80 {
+                buf.push((val & 0x7F) as u8 | 0x80);
+                val >>= 7;
+            }
+            buf.push(val as u8);
+        }
+
+        // Helper to write a piece
+        fn write_piece(buf: &mut Vec<u8>, piece: &str, score: f32, piece_type: i32) {
+            let mut piece_data = Vec::new();
+            // piece string (field 1, wire type 2)
+            piece_data.push(0x0A); // field 1, wire type 2
+            write_varint(&mut piece_data, piece.len() as u64);
+            piece_data.extend_from_slice(piece.as_bytes());
+            // score (field 2, wire type 5)
+            piece_data.push(0x15); // field 2, wire type 5
+            piece_data.extend_from_slice(&score.to_le_bytes());
+            // type (field 3, wire type 0)
+            piece_data.push(0x18); // field 3, wire type 0
+            write_varint(&mut piece_data, piece_type as u64);
+
+            // Write piece as field 1 of ModelProto
+            buf.push(0x0A); // field 1, wire type 2
+            write_varint(buf, piece_data.len() as u64);
+            buf.extend_from_slice(&piece_data);
+        }
+
+        write_piece(&mut data, "<s>", 0.0, 3); // control
+        write_piece(&mut data, "hello", -1.5, 1); // normal
+        write_piece(&mut data, "</s>", 0.0, 3); // control
+
+        let tok = BpeTokenizer::from_sentencepiece_bytes(&data).unwrap();
+        assert_eq!(tok.vocab_size(), 3);
+        assert_eq!(tok.config().bos_token, Some(0));
+        assert_eq!(tok.config().eos_token, Some(2));
     }
 }

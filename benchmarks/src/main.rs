@@ -1,12 +1,18 @@
 mod correctness;
 mod export;
+mod far_memory;
 mod helpers;
 mod inference;
 mod kernels;
 mod matmul;
 mod memory;
+mod perplexity;
 mod precision;
+mod qat;
+mod qat_sweep;
+mod qat_ablation;
 mod quantization;
+mod train;
 
 use bitllm_tensor::simd;
 use clap::{Parser, Subcommand};
@@ -36,6 +42,16 @@ enum BenchCmd {
     Memory,
     /// Token generation projection only
     Inference,
+    /// Perplexity (FP32 vs bit1) on a synthetic model
+    Perplexity,
+    /// Ternary LoRA readout trained on frozen bigram hidden states
+    Train,
+    /// Full-graph STE-QAT vs naive quantization (logit MSE)
+    Qat,
+    /// QAT hyperparameter sweep (lr x steps grid per format)
+    QatSweep,
+    /// QAT per-projection ablation study
+    QatAblation,
 }
 
 fn detect_cpu_features() {
@@ -137,6 +153,11 @@ fn main() {
         BenchCmd::Matmul => matmul::bench_matmul_suite(),
         BenchCmd::Memory => memory::bench_all_memory(),
         BenchCmd::Inference => inference::bench_token_generation(),
+        BenchCmd::Perplexity => {}
+        BenchCmd::Train => {}
+        BenchCmd::Qat => {}
+        BenchCmd::QatSweep => {}
+        BenchCmd::QatAblation => {}
         BenchCmd::Full => {
             quantization::bench_quantization_throughput();
             correctness::bench_correctness();
@@ -147,9 +168,45 @@ fn main() {
         }
     }
 
-    // Always run precision + export (unless user wants a single isolated benchmark)
+    // Always run precision + perplexity (unless user wants a single isolated benchmark)
     let precision_rows = if run_all || matches!(cmd, BenchCmd::Precision) {
         precision::bench_precision_comparison()
+    } else {
+        Vec::new()
+    };
+
+    let perplexity_rows = if run_all || matches!(cmd, BenchCmd::Perplexity) {
+        perplexity::bench_perplexity()
+    } else {
+        Vec::new()
+    };
+
+    let memory_rows = if run_all || matches!(cmd, BenchCmd::Perplexity) {
+        far_memory::bench_memory()
+    } else {
+        Vec::new()
+    };
+
+    let train_rows = if run_all || matches!(cmd, BenchCmd::Train) {
+        train::bench_train()
+    } else {
+        Vec::new()
+    };
+
+    let qat_rows = if run_all || matches!(cmd, BenchCmd::Qat) {
+        qat::bench_qat()
+    } else {
+        Vec::new()
+    };
+
+    let qat_sweep_rows = if matches!(cmd, BenchCmd::QatSweep) {
+        qat_sweep::bench_qat_sweep()
+    } else {
+        Vec::new()
+    };
+
+    let qat_ablation_rows = if matches!(cmd, BenchCmd::QatAblation) {
+        qat_ablation::bench_qat_ablation()
     } else {
         Vec::new()
     };
@@ -158,7 +215,14 @@ fn main() {
     let results_dir = std::path::Path::new("benchmarks/results");
     let mut export_path: Option<String> = None;
 
-    if !precision_rows.is_empty() {
+    if !precision_rows.is_empty()
+        || !perplexity_rows.is_empty()
+        || !memory_rows.is_empty()
+        || !train_rows.is_empty()
+        || !qat_rows.is_empty()
+        || !qat_sweep_rows.is_empty()
+        || !qat_ablation_rows.is_empty()
+    {
         let machine = export::collect_machine_info();
         let kernel_results: Vec<export::KernelBench> = kernels::collect_kernel_results();
         let export_data = export::build_export(
@@ -166,6 +230,12 @@ fn main() {
             chrono::Local::now().format("%Y-%m-%d_%H:%M:%S").to_string(),
             kernel_results,
             precision_rows.clone(),
+            perplexity_rows,
+            memory_rows,
+            train_rows,
+            qat_rows,
+            qat_sweep_rows,
+            qat_ablation_rows,
         );
 
         match export::write_json(&export_data, results_dir) {

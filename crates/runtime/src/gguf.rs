@@ -620,6 +620,8 @@ impl GgufLoader {
             max_seq_len,
             rope_theta,
             tie_word_embeddings,
+            sub_ln: false,
+            rope_scaling: None,
         })
     }
 }

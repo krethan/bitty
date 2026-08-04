@@ -33,16 +33,20 @@ cargo test --workspace
 
 ## Architecture
 
-BitLLM is organized as a Rust workspace with 6 crates:
+BitLLM is organized as a Rust workspace with 10 crates:
 
-| Crate | Purpose |
-|---|---|
-| `bitllm-tensor` | Core tensor operations (F32 activations, BIT1 packed weights) |
-| `bitllm-quantization` | Ternary quantization and fused 1-bit matmul kernels |
-| `bitllm-tokenizer` | BPE tokenizer and encoding/decoding |
-| `bitllm-runtime` | Transformer model, attention, KV-cache, sampling |
-| `bitllm-server` | OpenAI-compatible REST API server |
-| `bitllm-distributed` | Tensor parallelism and multi-device support |
+| Crate | Purpose | Status |
+|---|---|---|
+| `bitllm-tensor` | Core tensor operations (F32 activations, BIT1 packed weights) | active |
+| `bitllm-quantization` | Ternary quantization and fused 1-bit matmul kernels | active |
+| `bitllm-tokenizer` | BPE tokenizer and encoding/decoding | active |
+| `bitllm-runtime` | Transformer model, attention, KV-cache, sampling | active |
+| `bitllm-server` | OpenAI-compatible REST API server | active |
+| `bitllm-distributed` | Tensor parallelism and multi-device support | active |
+| `bitllm-train` | Ternary LoRA training (block-coordinate descent, 2-bit packed) | active |
+| `bitllm-rocm` | ROCm GPU abstractions | experimental, not wired |
+| `hip_tern` | AMD RDNA3 ternary attention kernel (Project Mercurial) | experimental, not wired |
+| `bitllm-cognition` | Hyperdimensional computing primitives | experimental, not wired |
 
 ## Quantization
 

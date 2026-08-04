@@ -1,0 +1,134 @@
+{
+  "benchmark_version": "1.0.0",
+  "git_commit": "21b3e6d",
+  "machine": {
+    "os": "linux",
+    "cpu_model": "AMD Ryzen 7 3700X 8-Core Processor",
+    "ram_gb": 15.56854248046875
+  },
+  "timestamp": "2026-08-03_00:21:00",
+  "kernels": [
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 64,
+      "time_ms": 0.000027960000000000007,
+      "gbps": 0.5722460658082974,
+      "tbit_per_sec": 0.004577968526466379
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 256,
+      "time_ms": 0.000027360000000000006,
+      "gbps": 2.3391812865497075,
+      "tbit_per_sec": 0.018713450292397658
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 1024,
+      "time_ms": 0.0000301,
+      "gbps": 8.50498338870432,
+      "tbit_per_sec": 0.06803986710963456
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 4096,
+      "time_ms": 0.000048549999999999974,
+      "gbps": 21.091658084449033,
+      "tbit_per_sec": 0.16873326467559224
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 64,
+      "time_ms": 0.000027660000000000006,
+      "gbps": 1.1569052783803322,
+      "tbit_per_sec": 0.009255242227042658
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 256,
+      "time_ms": 0.000039270000000000036,
+      "gbps": 3.259485612426786,
+      "tbit_per_sec": 0.026075884899414287
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 1024,
+      "time_ms": 0.0000842,
+      "gbps": 6.080760095011876,
+      "tbit_per_sec": 0.04864608076009501
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 4096,
+      "time_ms": 0.0002719,
+      "gbps": 7.532180948878264,
+      "tbit_per_sec": 0.060257447591026116
+    }
+  ],
+  "precision": [],
+  "perplexity": [
+    {
+      "name": "FP32",
+      "perplexity": 15.919083001394666,
+      "bits_per_token": 3.992685328542599,
+      "nll_sum": 22137.38110816055,
+      "n_tokens": 7999,
+      "ctx_len": 64
+    },
+    {
+      "name": "BIT1",
+      "perplexity": 102.68347836486902,
+      "bits_per_token": 6.682060262389618,
+      "nll_sum": 37048.57819842489,
+      "n_tokens": 7999,
+      "ctx_len": 64
+    },
+    {
+      "name": "BIT1-A8",
+      "perplexity": 102.67951472465798,
+      "bits_per_token": 6.682004572472063,
+      "nll_sum": 37048.26942655149,
+      "n_tokens": 7999,
+      "ctx_len": 64
+    },
+    {
+      "name": "BIT1-OL",
+      "perplexity": 93.80228512189895,
+      "bits_per_token": 6.5515511636181545,
+      "nll_sum": 36324.972549631864,
+      "n_tokens": 7999,
+      "ctx_len": 64
+    },
+    {
+      "name": "BIT1-OL-A8",
+      "perplexity": 93.81435161697932,
+      "bits_per_token": 6.551736736421717,
+      "nll_sum": 36326.001455127225,
+      "n_tokens": 7999,
+      "ctx_len": 64
+    }
+  ],
+  "memory": [
+    {
+      "mode": "WINDOW",
+      "overall_ppl": 58.069142622614265,
+      "echo_ppl": 70.0472576404144,
+      "recall_at_1": 0.0,
+      "memory_bytes": 0,
+      "dense_bytes": 34816,
+      "compression_ratio": 1.0
+    },
+    {
+      "mode": "MEM",
+      "overall_ppl": 49.2944251148494,
+      "echo_ppl": 1.0000001436729602,
+      "recall_at_1": 1.0,
+      "memory_bytes": 4096,
+      "dense_bytes": 34816,
+      "compression_ratio": 8.5
+    }
+  ],
+  "train": [],
+  "qat": [],
+  "qat_sweep": []
+}

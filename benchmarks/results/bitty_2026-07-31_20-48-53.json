@@ -1,0 +1,121 @@
+{
+  "benchmark_version": "1.0.0",
+  "git_commit": "21b3e6d",
+  "machine": {
+    "os": "linux",
+    "cpu_model": "AMD Ryzen 7 3700X 8-Core Processor",
+    "ram_gb": 15.56854248046875
+  },
+  "timestamp": "2026-07-31_20:48:53",
+  "kernels": [
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 64,
+      "time_ms": 0.000030250000000000003,
+      "gbps": 0.5289256198347108,
+      "tbit_per_sec": 0.004231404958677686
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 256,
+      "time_ms": 0.000027249999999999995,
+      "gbps": 2.3486238532110093,
+      "tbit_per_sec": 0.018788990825688075
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 1024,
+      "time_ms": 0.0000301,
+      "gbps": 8.50498338870432,
+      "tbit_per_sec": 0.06803986710963456
+    },
+    {
+      "name": "xnor_popcount_1bit",
+      "size": 4096,
+      "time_ms": 0.00004964999999999999,
+      "gbps": 20.624370594159117,
+      "tbit_per_sec": 0.16499496475327294
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 64,
+      "time_ms": 0.000027139999999999994,
+      "gbps": 1.1790714812085485,
+      "tbit_per_sec": 0.009432571849668388
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 256,
+      "time_ms": 0.000036770000000000036,
+      "gbps": 3.4810987217840594,
+      "tbit_per_sec": 0.027848789774272475
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 1024,
+      "time_ms": 0.00008575000000000001,
+      "gbps": 5.970845481049562,
+      "tbit_per_sec": 0.04776676384839649
+    },
+    {
+      "name": "xnor_popcount_2bit",
+      "size": 4096,
+      "time_ms": 0.00027394999999999996,
+      "gbps": 7.4758167548822785,
+      "tbit_per_sec": 0.05980653403905823
+    }
+  ],
+  "precision": [],
+  "perplexity": [],
+  "memory": [],
+  "train": [
+    {
+      "name": "TERNARY-R4-S0.10",
+      "ppl": 326.0840341467133,
+      "ppl_fp32": 15.919083001394666,
+      "rank": 4,
+      "init_scale": 0.10000000149011612,
+      "sweeps": 400,
+      "train_mse": 0.2945091128349304,
+      "weight_bytes": 200,
+      "fp32_bytes": 3072,
+      "compression_ratio": 15.36
+    },
+    {
+      "name": "TERNARY-R4-S0.05",
+      "ppl": 261.36885823781046,
+      "ppl_fp32": 15.919083001394666,
+      "rank": 4,
+      "init_scale": 0.05000000074505806,
+      "sweeps": 400,
+      "train_mse": 0.4683806598186493,
+      "weight_bytes": 200,
+      "fp32_bytes": 3072,
+      "compression_ratio": 15.36
+    },
+    {
+      "name": "TERNARY-R8-S0.05",
+      "ppl": 312.9598933557832,
+      "ppl_fp32": 15.919083001394666,
+      "rank": 8,
+      "init_scale": 0.05000000074505806,
+      "sweeps": 300,
+      "train_mse": 0.1363862305879593,
+      "weight_bytes": 392,
+      "fp32_bytes": 6144,
+      "compression_ratio": 15.673469387755102
+    },
+    {
+      "name": "TERNARY-R8-S0.10",
+      "ppl": 445.1964337809681,
+      "ppl_fp32": 15.919083001394666,
+      "rank": 8,
+      "init_scale": 0.10000000149011612,
+      "sweeps": 300,
+      "train_mse": 0.17070931196212769,
+      "weight_bytes": 392,
+      "fp32_bytes": 6144,
+      "compression_ratio": 15.673469387755102
+    }
+  ]
+}

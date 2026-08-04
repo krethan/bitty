@@ -16,6 +16,8 @@ path = "src/bittransformer_bench.rs"
 bitllm-tensor = { path = "../crates/tensor" }
 bitllm-quantization = { path = "../crates/quantization" }
 bitllm-runtime = { path = "../crates/runtime" }
+bitllm-cognition = { path = "../crates/cognition" }
+bitllm-train = { path = "../crates/train" }
 rand = "0.8"
 rayon.workspace = true
 serde = { workspace = true }
