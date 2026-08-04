@@ -37,11 +37,11 @@ impl GpuContext {
 
 pub use bitlinear::BitLinear;
 pub use bittransformer::{BitAttention, BitTransformerLayer};
-pub use config::{Architecture, ModelConfig};
+pub use config::{Activation, Architecture, ModelConfig, NormType};
 pub use loader::{
-    load_safetensors_weights, map_weight_for_architecture, Gpt2WeightMapper, LlamaWeightMapper,
-    LoadingStats, MistralWeightMapper, PhiWeightMapper, QwenWeightMapper, SafeTensorsLoader,
-    WeightMapper, WeightTarget,
+    apply_weight_target, load_safetensors_weights, map_weight_for_architecture, CustomWeightMapper,
+    GemmaWeightMapper, Gpt2WeightMapper, LlamaWeightMapper, LoadingStats, MistralWeightMapper,
+    PhiWeightMapper, QwenWeightMapper, SafeTensorsLoader, WeightMapper, WeightTarget,
 };
 pub use model::Model;
 pub use sampler::{Sampler, SamplingStrategy};

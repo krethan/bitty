@@ -126,7 +126,6 @@ fn load_gguf_weights(
     config: &ModelConfig,
 ) {
     use bitllm_runtime::gguf::GgufWeightMapper;
-    use bitllm_runtime::loader::WeightTarget;
 
     for name in loader.tensor_names() {
         let target = GgufWeightMapper::map_weight(name);
@@ -144,64 +143,8 @@ fn load_gguf_weights(
             tensor
         };
 
-        match target {
-            WeightTarget::Embedding => {
-                model.embedding.weight = tensor;
-            }
-            WeightTarget::FinalNorm => {
-                model.norm.weight = tensor;
-            }
-            WeightTarget::LmHead => {
-                model.lm_head.weight = tensor;
-            }
-            WeightTarget::AttentionQ { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.q_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionK { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.k_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionV { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.v_proj.weight = tensor;
-                }
-            }
-            WeightTarget::AttentionO { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.o_proj.weight = tensor;
-                }
-            }
-            WeightTarget::FfnGate { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_gate.weight = tensor;
-                }
-            }
-            WeightTarget::FfnDown { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_down.weight = tensor;
-                }
-            }
-            WeightTarget::FfnUp { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_up.weight = tensor;
-                }
-            }
-            WeightTarget::AttnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attn_norm.weight = tensor;
-                }
-            }
-            WeightTarget::FfnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_norm.weight = tensor;
-                }
-            }
-            WeightTarget::Unknown(unknown_name) => {
-                log::debug!("Skipping unknown tensor: {}", unknown_name);
-            }
+        if !bitllm_runtime::apply_weight_target(model, &target, tensor) {
+            log::debug!("Skipping tensor '{}'", name);
         }
     }
 

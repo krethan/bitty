@@ -196,6 +196,10 @@ pub struct Attention {
     pub k_proj: Linear,
     pub v_proj: Linear,
     pub o_proj: Linear,
+    /// Gemma-style per-head Q norm (RMSNorm over each head, applied before RoPE).
+    pub q_norm: Option<crate::layers::RmsNorm>,
+    /// Gemma-style per-head K norm.
+    pub k_norm: Option<crate::layers::RmsNorm>,
     pub config: ModelConfig,
     scores: RefCell<Vec<f32>>,
     acc: RefCell<Vec<f32>>,
@@ -209,6 +213,19 @@ impl Attention {
         o_proj: Linear,
         config: ModelConfig,
     ) -> Self {
+        Self::new_with_qk_norm(q_proj, k_proj, v_proj, o_proj, None, None, config)
+    }
+
+    /// Like [`Attention::new`], with optional per-head Q/K norms (Gemma).
+    pub fn new_with_qk_norm(
+        q_proj: Linear,
+        k_proj: Linear,
+        v_proj: Linear,
+        o_proj: Linear,
+        q_norm: Option<crate::layers::RmsNorm>,
+        k_norm: Option<crate::layers::RmsNorm>,
+        config: ModelConfig,
+    ) -> Self {
         let max_seq_len = config.max_seq_len;
         let head_dim = config.head_dim();
         Self {
@@ -216,6 +233,8 @@ impl Attention {
             k_proj,
             v_proj,
             o_proj,
+            q_norm,
+            k_norm,
             config,
             scores: RefCell::new(Vec::with_capacity(max_seq_len)),
             acc: RefCell::new(Vec::with_capacity(head_dim)),
@@ -271,10 +290,20 @@ impl Attention {
         let mut k_reshaped = reshape_for_attention(&k, num_kv_heads, head_dim);
         let v_reshaped = reshape_for_attention(&v, num_kv_heads, head_dim);
 
-        apply_rotary_emb_batch(&mut q_reshaped, positions, head_dim, theta, rope_cache);
-        apply_rotary_emb_batch(&mut k_reshaped, positions, head_dim, theta, rope_cache);
+        if let Some(ref q_norm) = self.q_norm {
+            apply_qk_norm(&mut q_reshaped, q_norm, num_heads, head_dim);
+        }
+        if let Some(ref k_norm) = self.k_norm {
+            apply_qk_norm(&mut k_reshaped, k_norm, num_kv_heads, head_dim);
+        }
+
+        if self.config.use_rope {
+            apply_rotary_emb_batch(&mut q_reshaped, positions, head_dim, theta, rope_cache);
+            apply_rotary_emb_batch(&mut k_reshaped, positions, head_dim, theta, rope_cache);
+        }
 
         let max_seq_len = self.config.max_seq_len;
+        let window = self.config.sliding_window;
         let mut scores_buf = self.scores.borrow_mut();
         let mut acc_buf = self.acc.borrow_mut();
         if scores_buf.len() < max_seq_len {
@@ -297,6 +326,7 @@ impl Attention {
                     head_dim,
                     batch,
                     kv_lens,
+                    window,
                     &mut scores_buf[..max_seq_len],
                     &mut acc_buf[..head_dim],
                 )
@@ -312,6 +342,7 @@ impl Attention {
                     head_dim,
                     batch,
                     &ones,
+                    window,
                     &mut scores_buf[..max_seq_len],
                     &mut acc_buf[..head_dim],
                 )
@@ -347,15 +378,24 @@ impl Attention {
         let mut k_reshaped = reshape_for_attention(&k, num_kv_heads, head_dim);
         let v_reshaped = reshape_for_attention(&v, num_kv_heads, head_dim);
 
-        gpu_rope(
-            &mut q_reshaped,
-            &mut k_reshaped,
-            position,
-            head_dim,
-            self.config.rope_theta,
-            gpu,
-            rope_cache,
-        );
+        if let Some(ref q_norm) = self.q_norm {
+            apply_qk_norm(&mut q_reshaped, q_norm, num_heads, head_dim);
+        }
+        if let Some(ref k_norm) = self.k_norm {
+            apply_qk_norm(&mut k_reshaped, k_norm, num_kv_heads, head_dim);
+        }
+
+        if self.config.use_rope {
+            gpu_rope(
+                &mut q_reshaped,
+                &mut k_reshaped,
+                position,
+                head_dim,
+                self.config.rope_theta,
+                gpu,
+                rope_cache,
+            );
+        }
 
         if let Some(c) = cache.as_mut() {
             c.update(layer_idx, slot, &k_reshaped, &v_reshaped, position);
@@ -364,6 +404,9 @@ impl Attention {
             Some(c) => c.get_kv_used(layer_idx, slot),
             None => (&k_reshaped, &v_reshaped, k_reshaped.shape()[1]),
         };
+
+        let window = self.config.sliding_window;
+        let kv_start = window.map_or(0, |w| kv_seq_len.saturating_sub(w));
 
         // Ensure scratch buffers are large enough
         let mut scores_buf = self.scores.borrow_mut();
@@ -384,6 +427,7 @@ impl Attention {
             head_dim,
             seq_len,
             kv_seq_len,
+            kv_start,
             slot,
             &mut scores_buf[..kv_seq_len],
             &mut acc_buf[..head_dim],
@@ -413,6 +457,35 @@ pub(crate) fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim:
     result
 }
 
+/// Apply per-head RMSNorm to a reshaped `[num_heads, seq_len, head_dim]`
+/// tensor (Gemma QK-norm). `norm.weight` is `[num_heads, head_dim]`.
+pub(crate) fn apply_qk_norm(x: &mut Tensor, norm: &crate::layers::RmsNorm, num_heads: usize, head_dim: usize) {
+    let seq_len = x.shape()[1];
+    let w = norm.weight.as_f32_slice();
+    let eps = norm.eps;
+    for h in 0..num_heads {
+        for pos in 0..seq_len {
+            let base = h * seq_len * head_dim + pos * head_dim;
+            let row: Vec<f32> = x
+                .as_f32_slice()
+                .iter()
+                .skip(base)
+                .take(head_dim)
+                .copied()
+                .collect();
+            let mut sum_sq = 0.0f64;
+            for &v in &row {
+                sum_sq += (v as f64) * (v as f64);
+            }
+            let inv_rms = 1.0 / ((sum_sq / head_dim as f64) as f32 + eps).sqrt();
+            let w_row = &w[h * head_dim..(h + 1) * head_dim];
+            for j in 0..head_dim {
+                x.as_f32_slice_mut()[base + j] = row[j] * inv_rms * w_row[j];
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn scaled_dot_product_attention(
     q: &Tensor,
@@ -423,6 +496,7 @@ fn scaled_dot_product_attention(
     head_dim: usize,
     seq_len: usize,
     kv_seq_len: usize,
+    kv_start: usize,
     slot: usize,
     scores: &mut [f32],
     acc: &mut [f32],
@@ -437,6 +511,7 @@ fn scaled_dot_product_attention(
     };
     let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
+    let window_len = kv_seq_len - kv_start;
 
     let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
 
@@ -457,23 +532,25 @@ fn scaled_dot_product_attention(
 
             let mut max_val: f32 = f32::NEG_INFINITY;
 
-            for pos_k in 0..kv_seq_len {
+            for t in 0..window_len {
+                let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = dot / scale;
-                scores[pos_k] = score;
+                scores[t] = score;
                 if score > max_val {
                     max_val = score;
                 }
             }
 
-            simd::f32_add_scalar_inplace(&mut scores[..kv_seq_len], -max_val);
-            simd::f32_exp_inplace(&mut scores[..kv_seq_len]);
-            let sum_exp: f32 = simd::f32_sum(&scores[..kv_seq_len]);
-            simd::f32_scale_inplace(&mut scores[..kv_seq_len], 1.0 / sum_exp);
+            simd::f32_add_scalar_inplace(&mut scores[..window_len], -max_val);
+            simd::f32_exp_inplace(&mut scores[..window_len]);
+            let sum_exp: f32 = simd::f32_sum(&scores[..window_len]);
+            simd::f32_scale_inplace(&mut scores[..window_len], 1.0 / sum_exp);
 
             acc[..head_dim].fill(0.0);
-            for (pos_k, score) in scores[..kv_seq_len].iter().enumerate() {
+            for (t, score) in scores[..window_len].iter().enumerate() {
+                let pos_k = kv_start + t;
                 let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
                 simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
             }
@@ -496,9 +573,11 @@ pub(crate) fn scaled_dot_product_attention_owned(
     head_dim: usize,
     seq_len: usize,
     kv_seq_len: usize,
+    kv_start: usize,
 ) -> Tensor {
     let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
+    let window_len = kv_seq_len - kv_start;
 
     let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
     let q_slice = q.as_f32_slice();
@@ -513,7 +592,8 @@ pub(crate) fn scaled_dot_product_attention_owned(
             let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
             let mut max_val: f32 = f32::NEG_INFINITY;
-            for pos_k in 0..kv_seq_len {
+            for t in 0..window_len {
+                let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = dot / scale;
@@ -521,7 +601,7 @@ pub(crate) fn scaled_dot_product_attention_owned(
                     max_val = score;
                 }
             }
-            let mut exp_scores: Vec<f32> = (0..kv_seq_len)
+            let mut exp_scores: Vec<f32> = (kv_start..kv_seq_len)
                 .map(|pos_k| {
                     let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                     let dot = simd::f32_dot(q_row, k_row) / scale;
@@ -562,6 +642,7 @@ pub(crate) fn scaled_dot_product_attention_batched(
     head_dim: usize,
     batch: usize,
     kv_lens: &[usize],
+    window: Option<usize>,
     scores: &mut [f32],
     acc: &mut [f32],
 ) -> Tensor {
@@ -589,6 +670,8 @@ pub(crate) fn scaled_dot_product_attention_batched(
             } else {
                 1
             };
+            let kv_start = window.map_or(0, |w| kv_len.saturating_sub(w));
+            let window_len = kv_len - kv_start;
             let q_row = &q_slice[(h * batch + b) * head_dim..][..head_dim];
             let head_base = if cache_layout {
                 (b * num_kv_heads + kv_h) * kv_stride * head_dim
@@ -597,23 +680,25 @@ pub(crate) fn scaled_dot_product_attention_batched(
             };
 
             let mut max_val: f32 = f32::NEG_INFINITY;
-            for pos_k in 0..kv_len {
+            for t in 0..window_len {
+                let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = dot / scale;
-                scores[pos_k] = score;
+                scores[t] = score;
                 if score > max_val {
                     max_val = score;
                 }
             }
 
-            simd::f32_add_scalar_inplace(&mut scores[..kv_len], -max_val);
-            simd::f32_exp_inplace(&mut scores[..kv_len]);
-            let sum_exp: f32 = simd::f32_sum(&scores[..kv_len]);
-            simd::f32_scale_inplace(&mut scores[..kv_len], 1.0 / sum_exp);
+            simd::f32_add_scalar_inplace(&mut scores[..window_len], -max_val);
+            simd::f32_exp_inplace(&mut scores[..window_len]);
+            let sum_exp: f32 = simd::f32_sum(&scores[..window_len]);
+            simd::f32_scale_inplace(&mut scores[..window_len], 1.0 / sum_exp);
 
             acc[..head_dim].fill(0.0);
-            for (pos_k, score) in scores[..kv_len].iter().enumerate() {
+            for (t, score) in scores[..window_len].iter().enumerate() {
+                let pos_k = kv_start + t;
                 let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
                 simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
             }

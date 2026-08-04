@@ -610,6 +610,20 @@ impl GgufLoader {
             .map(|arr: &[MetadataValue]| arr.len())
             .unwrap_or(32000);
 
+        let activation = architecture.default_activation();
+        let norm_type = if architecture.uses_rms_norm() {
+            crate::config::NormType::RmsNorm
+        } else {
+            crate::config::NormType::LayerNorm
+        };
+        let use_rope = architecture.uses_rope();
+        let position_embeddings = if architecture.uses_rope() {
+            None
+        } else {
+            Some(max_seq_len)
+        };
+        let qk_norm = matches!(architecture, crate::config::Architecture::Gemma);
+
         Some(ModelConfig {
             vocab_size,
             hidden_size,
@@ -624,6 +638,13 @@ impl GgufLoader {
             sub_ln: false,
             rope_scaling: None,
             architecture,
+            activation,
+            norm_type,
+            use_rope,
+            position_embeddings,
+            qk_norm,
+            sliding_window: get_u64("attention.sliding_window").map(|v| v as usize),
+            head_dim: get_u64("attention.key_length").map(|v| v as usize),
         })
     }
 }

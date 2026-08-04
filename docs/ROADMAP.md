@@ -95,13 +95,13 @@ break `cargo test --workspace`.
 - [x] Tied word embeddings (LLaMA-2 7B, Gemma, T5)
 - [x] RoPE scaling for extended context (LLaMA-2/3 linear/dynamic)
 - [x] SentencePiece tokenizer support (.model file parsing)
-- [x] Architecture enum (Llama, Mistral, Gpt2, Phi, Qwen, Qwen2/Qwen3, Custom) parsed from config.json/GGUF, `Default = Llama`
-- [x] Per-architecture weight mappers (`WeightMapper` trait: Mistral/Gpt2/Phi/Qwen; Mistral/Qwen delegate to LLaMA layout) + dispatch in `load_safetensors_weights`
-- [x] End-to-end test with model fixture (GPT-2-style safetensors: correct field placement + ternary quantization on load)
-- [ ] LLaMA 2/3 full support
-- [ ] Mistral/Mixtral support (weight mapping done; needs grouped-query attention wiring)
-- [ ] Phi support (weight mapping done)
-- [ ] Gemma support
-- [ ] Qwen support (weight mapping done)
-- [ ] GPT-2 support (weight mapping done)
-- [ ] Custom model support
+- [x] Architecture enum (Llama, Mistral, Gpt2, Phi, Qwen, Qwen2/Qwen3, Gemma, Custom) parsed from config.json/GGUF, `Default = Llama`
+- [x] Per-architecture weight mappers (`WeightMapper` trait: Mistral/Gpt2/Phi/Qwen/Gemma/Custom; Mistral/Qwen delegate to LLaMA layout, Custom falls back Llama→GPT-2→Phi) + dispatch in `load_safetensors_weights`; shared `apply_weight_target` (also used by the server's GGUF loader)
+- [x] GPT-2 support: `wpe` learned positions, `c_attn` q/k/v + bias splitting, `ln_f` bias, LayerNorm norms, single-FC GELU FFN (config-driven `norm_type`/`position_embeddings`/`activation`), end-to-end safetensors fixture (field placement + ternary on load)
+- [x] Phi support: `transformer.h.N` layout (q/k/v/dense, `fc1`/`fc2`, `ln`), `wpe` positions, LayerNorm + GELU, phi-3 LLaMA-layout fallback
+- [x] Gemma support: per-head Q/K-norm (RMSNorm before RoPE) loaded into `Attention.q_norm`/`k_norm`, gated-GELU FFN, tied embeddings, end-to-end safetensors fixture + forward smoke test
+- [x] Mistral support: sliding-window attention (`attention.sliding_window` → windowed SDPA in both single-token and batched paths), GQA, LLaMA layout
+- [x] LLaMA 2/3 support: RoPE scaling linear/dynamic/llama3, GQA, tied embeddings
+- [x] Qwen support (Qwen2/Qwen3): LLaMA layout
+- [x] Custom model support: best-effort Llama→GPT-2→Phi mapping
+- [x] GELU (exact erf + tanh approx) and erf SIMD primitives (`crates/tensor/src/simd`) used by the config-driven FFN forward path (`Activation::{SiluGated,GeluGated,Gelu}`)

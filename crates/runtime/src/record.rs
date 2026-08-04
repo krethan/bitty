@@ -117,14 +117,23 @@ impl Attention {
         let mut k_reshaped = crate::attention::reshape_for_attention(&k, num_kv_heads, head_dim);
         let v_reshaped = crate::attention::reshape_for_attention(&v, num_kv_heads, head_dim);
 
-        crate::attention::apply_rotary_emb_inplace_with_cache(
-            &mut q_reshaped,
-            &mut k_reshaped,
-            position,
-            head_dim,
-            self.config.rope_theta,
-            None,
-        );
+        if let Some(ref q_norm) = self.q_norm {
+            crate::attention::apply_qk_norm(&mut q_reshaped, q_norm, num_heads, head_dim);
+        }
+        if let Some(ref k_norm) = self.k_norm {
+            crate::attention::apply_qk_norm(&mut k_reshaped, k_norm, num_kv_heads, head_dim);
+        }
+
+        if self.config.use_rope {
+            crate::attention::apply_rotary_emb_inplace_with_cache(
+                &mut q_reshaped,
+                &mut k_reshaped,
+                position,
+                head_dim,
+                self.config.rope_theta,
+                None,
+            );
+        }
 
         let kv_seq_len;
         if let Some(c) = cache.as_mut() {
@@ -133,6 +142,9 @@ impl Attention {
         } else {
             kv_seq_len = k_reshaped.shape()[1];
         }
+
+        let window = self.config.sliding_window;
+        let kv_start = window.map_or(0, |w| kv_seq_len.saturating_sub(w));
 
         let output = crate::attention::scaled_dot_product_attention_owned(
             &q_reshaped,
@@ -143,6 +155,7 @@ impl Attention {
             head_dim,
             seq_len,
             kv_seq_len,
+            kv_start,
         );
 
         let reshaped = output.reshape_owned(&[seq_len, hidden_size]);

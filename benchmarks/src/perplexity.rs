@@ -143,6 +143,13 @@ pub(crate) fn synthetic_config() -> bitllm_runtime::ModelConfig {
         sub_ln: false,
         rope_scaling: None,
         architecture: bitllm_runtime::Architecture::Llama,
+        activation: bitllm_runtime::Activation::SiluGated,
+        norm_type: bitllm_runtime::NormType::RmsNorm,
+        use_rope: true,
+        position_embeddings: None,
+        qk_norm: false,
+        sliding_window: None,
+        head_dim: None,
     }
 }
 

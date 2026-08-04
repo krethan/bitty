@@ -32,6 +32,10 @@ pub struct BitAttention {
     pub k_proj: BitLinear,
     pub v_proj: BitLinear,
     pub o_proj: BitLinear,
+    /// Gemma-style per-head Q norm (RMSNorm over each head, applied before RoPE).
+    pub q_norm: Option<RmsNorm>,
+    /// Gemma-style per-head K norm (RMSNorm over each head, applied before RoPE).
+    pub k_norm: Option<RmsNorm>,
     pub config: ModelConfig,
 }
 
@@ -41,6 +45,8 @@ impl BitAttention {
         k_proj: BitLinear,
         v_proj: BitLinear,
         o_proj: BitLinear,
+        q_norm: Option<RmsNorm>,
+        k_norm: Option<RmsNorm>,
         config: ModelConfig,
     ) -> Self {
         Self {
@@ -48,6 +54,8 @@ impl BitAttention {
             k_proj,
             v_proj,
             o_proj,
+            q_norm,
+            k_norm,
             config,
         }
     }
@@ -176,8 +184,9 @@ impl BitAttention {
                     head_dim,
                     batch,
                     kv_lens,
-                    &mut scores,
+                    None,
                     &mut acc,
+                    &mut scores,
                 )
             }
             None => {
@@ -193,8 +202,9 @@ impl BitAttention {
                     head_dim,
                     batch,
                     &ones,
-                    &mut scores,
+                    None,
                     &mut acc,
+                    &mut scores,
                 )
             }
         };
@@ -350,7 +360,15 @@ impl BitTransformerLayer {
         let v_proj = BitLinear::from_linear_with_config(&layer.attention.v_proj, config);
         let o_proj = BitLinear::from_linear_with_config(&layer.attention.o_proj, config);
 
-        let attention = BitAttention::new(q_proj, k_proj, v_proj, o_proj, layer_config.clone());
+        let attention = BitAttention::new(
+            q_proj,
+            k_proj,
+            v_proj,
+            o_proj,
+            layer.attention.q_norm.clone(),
+            layer.attention.k_norm.clone(),
+            layer_config.clone(),
+        );
 
         let ffn_up = BitLinear::from_linear_with_config(&layer.ffn_up, config);
         let ffn_gate = BitLinear::from_linear_with_config(&layer.ffn_gate, config);

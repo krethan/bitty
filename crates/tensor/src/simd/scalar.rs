@@ -92,6 +92,38 @@ pub fn f32_silu_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
+/// Exact GELU: `0.5*x*(1 + erf(x/sqrt(2)))`.
+pub fn f32_gelu(a: &[f32], out: &mut [f32]) {
+    const INV_SQRT_2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    for i in 0..a.len() {
+        let x = a[i];
+        out[i] = 0.5 * x * (1.0 + erf(x * INV_SQRT_2));
+    }
+}
+
+/// Tanh-approximated GELU (GPT-2 `gelu_new` / Gemma `gelu_pytorch_tanh`):
+/// `0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))`.
+pub fn f32_gelu_tanh(a: &[f32], out: &mut [f32]) {
+    const C: f32 = 0.7978845608028654; // sqrt(2/pi)
+    for i in 0..a.len() {
+        let x = a[i];
+        out[i] = 0.5 * x * (1.0 + (C * (x + 0.044715 * x * x * x)).tanh());
+    }
+}
+
+/// Scalar (non-SIMD) approximation of `erf` (Abramowitz & Stegun 7.1.26).
+/// Good to ~1.5e-7, far tighter than the model tolerances we assert on.
+fn erf(x: f32) -> f32 {
+    let sign = if x < 0.0 { -1.0 } else { 1.0 };
+    let t = 1.0 / (1.0 + 0.3275911 * x.abs());
+    let y = 1.0
+        - (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t
+            + 0.254829592)
+            * t)
+            * (-x * x).exp();
+    sign * y
+}
+
 pub fn f32_matmul_row(a: &[f32], b_t: &[f32], out_row: &mut [f32], k: usize, n: usize) {
     for j in (0..n).step_by(4) {
         let remaining = n - j;

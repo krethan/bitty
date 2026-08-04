@@ -1,6 +1,6 @@
 use crate::attention::{Attention, KvCache, RoPECache};
 use crate::bittransformer::BitTransformerLayer;
-use crate::config::ModelConfig;
+use crate::config::{Activation, ModelConfig};
 use crate::layers::{Embedding, Linear, RmsNorm};
 use crate::sampler::Sampler;
 use crate::GpuContext;
@@ -53,10 +53,14 @@ impl TransformerLayer {
                 h
             });
             let normed2 = self.ffn_norm.forward_gpu(&h, gpu);
-            let up = self.ffn_up.forward_gpu(&normed2, gpu);
-            let gate = self.ffn_gate.forward_gpu(&normed2, gpu);
-            let activated = silu_mul(&gate, &up);
-            let ffn_out = self.ffn_down.forward_gpu(&activated, gpu);
+            let ffn_out = ffn_forward(
+                &self.config,
+                &normed2,
+                &self.ffn_up,
+                &self.ffn_gate,
+                &self.ffn_down,
+                gpu,
+            );
             return ctx.add(&h, &ffn_out).unwrap_or_else(|e| {
                 log::warn!("GPU add failed, falling back to CPU: {}", e);
                 let mut h2 = h;
@@ -69,10 +73,14 @@ impl TransformerLayer {
         let mut h = input.clone();
         h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward_gpu(&h, gpu);
-        let up = self.ffn_up.forward_gpu(&normed2, gpu);
-        let gate = self.ffn_gate.forward_gpu(&normed2, gpu);
-        let activated = silu_mul(&gate, &up);
-        let ffn_out = self.ffn_down.forward_gpu(&activated, gpu);
+        let ffn_out = ffn_forward(
+            &self.config,
+            &normed2,
+            &self.ffn_up,
+            &self.ffn_gate,
+            &self.ffn_down,
+            gpu,
+        );
         h.add_assign(&ffn_out).unwrap();
         h
 
@@ -97,10 +105,14 @@ impl TransformerLayer {
         let mut h = input.clone();
         h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward_gpu(&h, gpu);
-        let up = self.ffn_up.forward_gpu(&normed2, gpu);
-        let gate = self.ffn_gate.forward_gpu(&normed2, gpu);
-        let activated = silu_mul(&gate, &up);
-        let ffn_out = self.ffn_down.forward_gpu(&activated, gpu);
+        let ffn_out = ffn_forward(
+            &self.config,
+            &normed2,
+            &self.ffn_up,
+            &self.ffn_gate,
+            &self.ffn_down,
+            gpu,
+        );
         h.add_assign(&ffn_out).unwrap();
         h
     }
@@ -126,16 +138,17 @@ impl TransformerLayer {
         let mut h = input.clone();
         h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward(&h);
-        let up = self.ffn_up.forward(&normed2);
-        let gate = self.ffn_gate.forward(&normed2);
-        let activated = silu_mul(&gate, &up);
+        let (activated, up, gate) = ffn_record_activations(&self.config, &normed2, &self.ffn_up, &self.ffn_gate);
         let ffn_out = self.ffn_down.forward(&activated);
 
-        for (kind, input, target) in [
+        let mut samples = vec![
             (ProjectionKind::Up, &normed2, &up),
-            (ProjectionKind::Gate, &normed2, &gate),
             (ProjectionKind::Down, &activated, &ffn_out),
-        ] {
+        ];
+        if let Some(gate) = &gate {
+            samples.insert(1, (ProjectionKind::Gate, &normed2, gate));
+        }
+        for (kind, input, target) in samples {
             recorder.push(crate::record::ProjectionSample {
                 layer: layer_idx,
                 kind,
@@ -157,6 +170,9 @@ impl TransformerLayer {
 pub struct Model {
     pub config: ModelConfig,
     pub embedding: Embedding,
+    /// Learned positional embeddings (GPT-2 `wpe`, Phi `wpe`), indexed by
+    /// absolute position. `None` for RoPE-based models.
+    pub pos_embedding: Option<Tensor>,
     /// FP32 transformer layers (used when `bit_layers` is None).
     pub layers: Vec<TransformerLayer>,
     /// When set, inference runs through fused 1-bit BitLinear layers.
@@ -177,10 +193,11 @@ impl Model {
             config.hidden_size,
         );
 
-        let norm = RmsNorm::new(
-            Tensor::ones(&[config.hidden_size], DType::F32),
-            config.norm_eps,
-        );
+        let pos_embedding = config.position_embeddings.map(|max_pos| {
+            Tensor::zeros(&[max_pos, config.hidden_size], DType::F32)
+        });
+
+        let norm = make_norm(&config);
 
         let lm_head = Linear::new(
             Tensor::zeros(&[config.vocab_size, config.hidden_size], DType::F32),
@@ -199,17 +216,22 @@ impl Model {
             config.head_dim(),
         ));
 
-        let scaling_factor = config.rope_scaling.as_ref().map_or(1.0, |rs| rs.factor);
-        let rope_cache = Some(RoPECache::with_scaling(
-            config.max_seq_len,
-            config.head_dim(),
-            config.rope_theta,
-            scaling_factor,
-        ));
+        let rope_cache = if config.use_rope {
+            let scaling_factor = config.rope_scaling.as_ref().map_or(1.0, |rs| rs.factor);
+            Some(RoPECache::with_scaling(
+                config.max_seq_len,
+                config.head_dim(),
+                config.rope_theta,
+                scaling_factor,
+            ))
+        } else {
+            None
+        };
 
         Self {
             config,
             embedding,
+            pos_embedding,
             layers,
             bit_layers: None,
             norm,
@@ -300,6 +322,47 @@ impl Model {
         self.lm_head.weight = self.embedding.weight.clone();
     }
 
+    /// Add learned position embeddings (GPT-2/Phi `wpe`) in place, for a
+    /// contiguous sequence of rows starting at absolute `pos`. No-op for
+    /// RoPE-based models (`pos_embedding` is `None`).
+    fn add_position_embedding_inplace(&self, hidden: &mut Tensor, pos: usize) {
+        if let Some(ref pe) = self.pos_embedding {
+            let hidden_size = self.config.hidden_size;
+            let max_pos = self.config.position_embeddings.unwrap_or(0);
+            let rows = hidden.shape()[0];
+            let h = hidden.as_f32_slice_mut();
+            let p = pe.as_f32_slice();
+            for r in 0..rows {
+                let src = (pos + r).min(max_pos.saturating_sub(1));
+                let base = r * hidden_size;
+                let pbase = src * hidden_size;
+                for j in 0..hidden_size {
+                    h[base + j] += p[pbase + j];
+                }
+            }
+        }
+    }
+
+    /// Add learned position embeddings in place for a batch of tokens, where
+    /// `positions[b]` is the absolute position of token `b`. No-op for
+    /// RoPE-based models.
+    fn add_position_embedding_batch_inplace(&self, hidden: &mut Tensor, positions: &[usize]) {
+        if let Some(ref pe) = self.pos_embedding {
+            let hidden_size = self.config.hidden_size;
+            let max_pos = self.config.position_embeddings.unwrap_or(0);
+            let h = hidden.as_f32_slice_mut();
+            let p = pe.as_f32_slice();
+            for (r, &pos) in positions.iter().enumerate() {
+                let src = pos.min(max_pos.saturating_sub(1));
+                let base = r * hidden_size;
+                let pbase = src * hidden_size;
+                for j in 0..hidden_size {
+                    h[base + j] += p[pbase + j];
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "gpu")]
     pub fn set_gpu(&mut self, ctx: GpuContext) {
         self.gpu = Some(ctx);
@@ -342,6 +405,7 @@ impl Model {
         }
 
         let mut hidden = self.embedding.forward(token_ids);
+        self.add_position_embedding_inplace(&mut hidden, pos);
         for (i, layer) in self.layers.iter().enumerate() {
             hidden = layer.forward_record(&hidden, self.cache.as_mut(), i, pos, recorder);
         }
@@ -359,6 +423,7 @@ impl Model {
         }
 
         let mut hidden = self.embedding.forward(token_ids);
+        self.add_position_embedding_inplace(&mut hidden, pos);
 
         if let Some(ref mut cache) = self.cache {
             if let Some(ref bit_layers) = self.bit_layers {
@@ -425,12 +490,14 @@ impl Model {
         positions: &[usize],
         gpu: Option<&GpuContext>,
     ) -> Tensor {
+        let mut hidden = self.embedding.forward(next_tokens);
+        self.add_position_embedding_batch_inplace(&mut hidden, positions);
+
         if let Some(ref mut cache) = self.cache {
             for (b, &pos) in positions.iter().enumerate() {
                 cache.reserve(b, pos, 1);
             }
 
-            let mut hidden = self.embedding.forward(next_tokens);
             if let Some(ref bit_layers) = self.bit_layers {
                 for (i, layer) in bit_layers.iter().enumerate() {
                     hidden = layer.forward_batch_gpu(&hidden, Some(cache), i, positions, gpu);
@@ -452,7 +519,6 @@ impl Model {
             return self.lm_head.forward_gpu(&normed, gpu);
         }
 
-        let mut hidden = self.embedding.forward(next_tokens);
         if let Some(ref bit_layers) = self.bit_layers {
             for (i, layer) in bit_layers.iter().enumerate() {
                 hidden = layer.forward_batch_gpu(&hidden, None, i, positions, gpu);
@@ -709,8 +775,17 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
     let hidden = config.hidden_size;
     let head_dim = config.head_dim();
 
+    let qk_norm = if config.qk_norm {
+        Some(crate::layers::RmsNorm::new(
+            Tensor::ones(&[config.num_heads, head_dim], DType::F32),
+            config.norm_eps,
+        ))
+    } else {
+        None
+    };
+
     TransformerLayer {
-        attention: Attention::new(
+        attention: Attention::new_with_qk_norm(
             Linear::new(Tensor::zeros(&[hidden, hidden], DType::F32), None),
             Linear::new(
                 Tensor::zeros(&[hidden, config.num_kv_heads() * head_dim], DType::F32),
@@ -721,23 +796,114 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
                 None,
             ),
             Linear::new(Tensor::zeros(&[hidden, hidden], DType::F32), None),
+            qk_norm.clone(),
+            qk_norm,
             config.clone(),
         ),
-        attn_norm: RmsNorm::new(Tensor::ones(&[hidden], DType::F32), config.norm_eps),
+        attn_norm: make_norm(config),
         ffn_up: Linear::new(
-            Tensor::zeros(&[config.intermediate_size, hidden], DType::F32),
+            Tensor::zeros(&[config.ff_dim(), hidden], DType::F32),
             None,
         ),
         ffn_gate: Linear::new(
-            Tensor::zeros(&[config.intermediate_size, hidden], DType::F32),
+            Tensor::zeros(&[config.ff_dim(), hidden], DType::F32),
             None,
         ),
         ffn_down: Linear::new(
-            Tensor::zeros(&[hidden, config.intermediate_size], DType::F32),
+            Tensor::zeros(&[hidden, config.ff_dim()], DType::F32),
             None,
         ),
-        ffn_norm: RmsNorm::new(Tensor::ones(&[hidden], DType::F32), config.norm_eps),
+        ffn_norm: make_norm(config),
         config: config.clone(),
+    }
+}
+
+/// Build the pre-attention / pre-FFN norm for a config: RMSNorm or LayerNorm.
+fn make_norm(config: &ModelConfig) -> RmsNorm {
+    if config.uses_layer_norm() {
+        RmsNorm::new_layer(
+            Tensor::ones(&[config.hidden_size], DType::F32),
+            Some(Tensor::zeros(&[config.hidden_size], DType::F32)),
+            config.norm_eps,
+        )
+    } else {
+        RmsNorm::new(Tensor::ones(&[config.hidden_size], DType::F32), config.norm_eps)
+    }
+}
+
+fn ffn_forward(
+    config: &ModelConfig,
+    normed2: &Tensor,
+    up: &Linear,
+    gate: &Linear,
+    down: &Linear,
+    gpu: Option<&GpuContext>,
+) -> Tensor {
+    match config.default_activation() {
+        Activation::SiluGated => {
+            let up_out = up.forward_gpu(normed2, gpu);
+            let gate_out = gate.forward_gpu(normed2, gpu);
+            down.forward_gpu(&silu_mul(&gate_out, &up_out), gpu)
+        }
+        Activation::GeluGated => {
+            let up_out = up.forward_gpu(normed2, gpu);
+            let gate_out = gate.forward_gpu(normed2, gpu);
+            let mut gate_gelu = Tensor::zeros(gate_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_gelu_tanh(
+                gate_out.as_f32_slice(),
+                gate_gelu.as_f32_slice_mut(),
+            );
+            let mut activated = Tensor::zeros(gate_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_mul(
+                gate_gelu.as_f32_slice(),
+                up_out.as_f32_slice(),
+                activated.as_f32_slice_mut(),
+            );
+            down.forward_gpu(&activated, gpu)
+        }
+        Activation::Gelu => {
+            let up_out = up.forward_gpu(normed2, gpu);
+            let mut activated = Tensor::zeros(up_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_gelu(up_out.as_f32_slice(), activated.as_f32_slice_mut());
+            down.forward_gpu(&activated, gpu)
+        }
+    }
+}
+
+/// CPU record-path FFN: returns `(activated, up_out, gate_out)`. `gate_out` is
+/// `None` for non-gated GELU models (GPT-2).
+fn ffn_record_activations(
+    config: &ModelConfig,
+    normed2: &Tensor,
+    up: &Linear,
+    gate: &Linear,
+) -> (Tensor, Tensor, Option<Tensor>) {
+    match config.default_activation() {
+        Activation::SiluGated => {
+            let up_out = up.forward(normed2);
+            let gate_out = gate.forward(normed2);
+            let activated = silu_mul(&gate_out, &up_out);
+            (activated, up_out, Some(gate_out))
+        }
+        Activation::GeluGated => {
+            let up_out = up.forward(normed2);
+            let gate_out = gate.forward(normed2);
+            let mut gate_gelu = Tensor::zeros(gate_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_gelu_tanh(gate_out.as_f32_slice(), gate_gelu.as_f32_slice_mut());
+            let mut activated = Tensor::zeros(gate_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_mul(
+                gate_gelu.as_f32_slice(),
+                up_out.as_f32_slice(),
+                activated.as_f32_slice_mut(),
+            );
+            (activated, up_out, Some(gate_out))
+        }
+        Activation::Gelu => {
+            let up_out = up.forward(normed2);
+            let mut activated = Tensor::zeros(up_out.shape(), DType::F32);
+            bitllm_tensor::simd::f32_gelu(up_out.as_f32_slice(), activated.as_f32_slice_mut());
+            (activated, up_out, None)
+        }
     }
 }
 

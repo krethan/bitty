@@ -75,20 +75,48 @@ impl Linear {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NormKind {
+    Rms,
+    Layer,
+}
+
 #[derive(Clone)]
 pub struct RmsNorm {
     pub weight: Tensor,
+    pub bias: Option<Tensor>,
     pub eps: f32,
+    pub kind: NormKind,
 }
 
 impl RmsNorm {
     pub fn new(weight: Tensor, eps: f32) -> Self {
-        Self { weight, eps }
+        Self {
+            weight,
+            bias: None,
+            eps,
+            kind: NormKind::Rms,
+        }
+    }
+
+    /// A LayerNorm-capable norm (mean/variance subtraction plus bias).
+    pub fn new_layer(weight: Tensor, bias: Option<Tensor>, eps: f32) -> Self {
+        Self {
+            weight,
+            bias,
+            eps,
+            kind: NormKind::Layer,
+        }
     }
 
     pub fn from_f32(data: &[f32], shape: &[usize], eps: f32) -> Self {
         let weight = Tensor::from_slice(data, shape);
-        Self { weight, eps }
+        Self {
+            weight,
+            bias: None,
+            eps,
+            kind: NormKind::Rms,
+        }
     }
 
     pub fn forward(&self, input: &Tensor) -> Tensor {
@@ -98,7 +126,7 @@ impl RmsNorm {
     pub fn forward_gpu(&self, input: &Tensor, gpu: Option<&GpuContext>) -> Tensor {
         #[cfg(feature = "gpu")]
         if let Some(ctx) = gpu {
-            if input.is_gpu() || self.weight.is_gpu() {
+            if self.kind == NormKind::Rms && (input.is_gpu() || self.weight.is_gpu()) {
                 return ctx
                     .rms_norm(input, &self.weight, self.eps)
                     .unwrap_or_else(|e| {
@@ -112,6 +140,13 @@ impl RmsNorm {
     }
 
     fn forward_cpu(&self, input: &Tensor) -> Tensor {
+        match self.kind {
+            NormKind::Rms => self.forward_rms(input),
+            NormKind::Layer => self.forward_layer(input),
+        }
+    }
+
+    fn forward_rms(&self, input: &Tensor) -> Tensor {
         let n = input.num_elements();
         let hidden = input.shape().last().copied().unwrap_or(n);
 
@@ -128,6 +163,39 @@ impl RmsNorm {
             let w_row = &w_slice[..hidden];
             let out_row = &mut out_slice[i * hidden..][..hidden];
             bitllm_tensor::simd::f32_mul_scaled(row, w_row, inv_rms, out_row);
+        }
+
+        result
+    }
+
+    fn forward_layer(&self, input: &Tensor) -> Tensor {
+        let n = input.num_elements();
+        let hidden = input.shape().last().copied().unwrap_or(n);
+
+        let mut result = Tensor::zeros(input.shape(), DType::F32);
+        let in_slice = input.as_f32_slice();
+        let w_slice = self.weight.as_f32_slice();
+        let b_slice = self.bias.as_ref().map(|b| b.as_f32_slice());
+        let out_slice = result.as_f32_slice_mut();
+
+        let eps = self.eps;
+        for i in 0..(n / hidden) {
+            let row = &in_slice[i * hidden..][..hidden];
+            let mean = bitllm_tensor::simd::f32_sum(row) / hidden as f32;
+            let mut var = 0.0f64;
+            for &x in row {
+                let d = (x - mean) as f64;
+                var += d * d;
+            }
+            var /= hidden as f64;
+            let inv_std = 1.0 / (var as f32 + eps).sqrt();
+            let out_row = &mut out_slice[i * hidden..][..hidden];
+            for (j, &x) in row.iter().enumerate() {
+                out_row[j] = (x - mean) * inv_std * w_slice[j];
+                if let Some(b) = b_slice {
+                    out_row[j] += b[j];
+                }
+            }
         }
 
         result

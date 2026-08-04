@@ -8,6 +8,7 @@ pub enum Architecture {
     Mistral,
     Gpt2,
     Phi,
+    Gemma,
     Qwen2,
     Qwen3,
     Custom(String),
@@ -20,6 +21,7 @@ impl std::fmt::Display for Architecture {
             Architecture::Mistral => write!(f, "Mistral"),
             Architecture::Gpt2 => write!(f, "Gpt2"),
             Architecture::Phi => write!(f, "Phi"),
+            Architecture::Gemma => write!(f, "Gemma"),
             Architecture::Qwen2 => write!(f, "Qwen2"),
             Architecture::Qwen3 => write!(f, "Qwen3"),
             Architecture::Custom(s) => write!(f, "{}", s),
@@ -37,6 +39,7 @@ impl Architecture {
                         "MistralForCausalLM" | "MistralModel" => Architecture::Mistral,
                         "GPT2LMHeadModel" | "GPT2Model" => Architecture::Gpt2,
                         "PhiForCausalLM" | "PhiModel" => Architecture::Phi,
+                        "GemmaForCausalLM" | "GemmaModel" => Architecture::Gemma,
                         "Qwen2ForCausalLM" | "Qwen2Model" => Architecture::Qwen2,
                         "Qwen3ForCausalLM" | "Qwen3Model" => Architecture::Qwen3,
                         other => Architecture::Custom(other.to_string()),
@@ -49,6 +52,7 @@ impl Architecture {
             "mistral" => Architecture::Mistral,
             "gpt2" => Architecture::Gpt2,
             "phi" => Architecture::Phi,
+            "gemma" => Architecture::Gemma,
             "qwen2" => Architecture::Qwen2,
             "qwen3" => Architecture::Qwen3,
             other => Architecture::Custom(other.to_string()),
@@ -62,10 +66,83 @@ impl Architecture {
             "mistral" => Architecture::Mistral,
             "gpt2" => Architecture::Gpt2,
             "phi" | "phi2" => Architecture::Phi,
+            "gemma" => Architecture::Gemma,
             "qwen2" => Architecture::Qwen2,
             "qwen3" => Architecture::Qwen3,
             other => Architecture::Custom(other.to_string()),
         }
+    }
+
+    /// Whether this architecture uses RoPE rather than learned positional
+    /// embeddings. GPT-2 and Phi embed position information directly.
+    pub fn uses_rope(&self) -> bool {
+        !matches!(self, Architecture::Gpt2 | Architecture::Phi)
+    }
+
+    /// Whether this architecture uses RMSNorm (`false` → LayerNorm).
+    /// GPT-2 and Phi use LayerNorm with a bias term.
+    pub fn uses_rms_norm(&self) -> bool {
+        !matches!(self, Architecture::Gpt2 | Architecture::Phi)
+    }
+
+    /// The FFN shape/activation convention for this architecture.
+    pub fn default_activation(&self) -> Activation {
+        match self {
+            Architecture::Gpt2 | Architecture::Phi => Activation::Gelu,
+            Architecture::Gemma => Activation::GeluGated,
+            _ => Activation::SiluGated,
+        }
+    }
+}
+
+/// FFN activation convention.
+///
+/// - `SiluGated`: SwiGLU `down(silu(gate) * up)` (LLaMA/Mistral/Qwen)
+/// - `GeluGated`: `down(gelu(gate) * up)` (Gemma)
+/// - `Gelu`: single-FC `down(gelu(up))` (GPT-2, Phi-1/2)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Activation {
+    #[default]
+    SiluGated,
+    GeluGated,
+    Gelu,
+}
+
+impl Activation {
+    pub fn is_gated(&self) -> bool {
+        !matches!(self, Activation::Gelu)
+    }
+}
+
+/// Normalization layer convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NormType {
+    #[default]
+    RmsNorm,
+    LayerNorm,
+}
+
+/// Normalize `hidden_act`/`hidden_activation`/`activation_function` strings
+/// from a HF config into an [`Activation`].
+fn parse_activation(s: &str, arch: &Architecture) -> Activation {
+    match s {
+        "silu" | "swish" => Activation::SiluGated,
+        "gelu" => match arch {
+            // Gemma config.json uses `hidden_act: "gelu_pytorch_tanh"`; a bare
+            // "gelu" on a Gemma checkpoint means the gated variant.
+            Architecture::Gemma => Activation::GeluGated,
+            // GPT-2/Phi: single-FC GELU.
+            Architecture::Gpt2 | Architecture::Phi => Activation::Gelu,
+            _ => Activation::SiluGated,
+        },
+        "gelu_new" | "gelu_pytorch_tanh" | "gelu_tanh" => {
+            if matches!(arch, Architecture::Gpt2 | Architecture::Phi) {
+                Activation::Gelu
+            } else {
+                Activation::GeluGated
+            }
+        }
+        _ => arch.default_activation(),
     }
 }
 
@@ -94,6 +171,36 @@ pub struct ModelConfig {
     /// The model architecture (Llama, Mistral, Gpt2, Phi, Qwen2, etc.).
     #[serde(default)]
     pub architecture: Architecture,
+    /// FFN shape/activation (SwiGLU vs GELU vs Gemma's gated GELU).
+    #[serde(default)]
+    pub activation: Activation,
+    /// Norm layer kind (RMSNorm vs LayerNorm).
+    #[serde(default)]
+    pub norm_type: NormType,
+    /// Whether to apply RoPE in attention. False for GPT-2/Phi, which use
+    /// learned positional embeddings instead.
+    #[serde(default = "default_true")]
+    pub use_rope: bool,
+    /// Maximum length for learned positional embeddings (GPT-2 `wpe`, Phi
+    /// `wpe`). `None` means the model has no positional-embedding table.
+    #[serde(default)]
+    pub position_embeddings: Option<usize>,
+    /// Gemma-style QK-norm: per-head RMSNorm applied to q and k after the
+    /// projections and before RoPE.
+    #[serde(default)]
+    pub qk_norm: bool,
+    /// Mistral-style sliding-window attention window size. `None` = full
+    /// context (no windowing).
+    #[serde(default)]
+    pub sliding_window: Option<usize>,
+    /// Attention head dimension override (Gemma-2 uses `head_dim` distinct
+    /// from `hidden_size / num_heads`). `None` = `hidden_size / num_heads`.
+    #[serde(default)]
+    pub head_dim: Option<usize>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// RoPE scaling configuration for extended context windows.
@@ -107,7 +214,7 @@ pub struct RopeScaling {
 
 impl ModelConfig {
     pub fn head_dim(&self) -> usize {
-        self.hidden_size / self.num_heads
+        self.head_dim.unwrap_or(self.hidden_size / self.num_heads)
     }
 
     pub fn num_kv_heads(&self) -> usize {
@@ -115,7 +222,7 @@ impl ModelConfig {
     }
 
     pub fn kv_head_dim(&self) -> usize {
-        self.hidden_size / self.num_heads
+        self.head_dim()
     }
 
     pub fn num_kv_groups(&self) -> usize {
@@ -124,6 +231,26 @@ impl ModelConfig {
 
     pub fn ff_dim(&self) -> usize {
         self.intermediate_size
+    }
+
+    /// Whether the FFN is gated (SwiGLU/GeGLU) vs a single FC + activation.
+    pub fn uses_gated_ffn(&self) -> bool {
+        self.activation.is_gated()
+    }
+
+    pub fn uses_rope(&self) -> bool {
+        self.use_rope
+    }
+
+    pub fn uses_layer_norm(&self) -> bool {
+        self.norm_type == NormType::LayerNorm
+    }
+
+    /// The FFN activation convention for this model. Configs parsed from
+    /// HF/GGUF metadata set `activation` explicitly; this accessor is the
+    /// single source used by the forward path.
+    pub fn default_activation(&self) -> Activation {
+        self.activation
     }
 
     pub fn llama_small() -> Self {
@@ -141,6 +268,13 @@ impl ModelConfig {
             sub_ln: false,
             rope_scaling: None,
             architecture: Architecture::Llama,
+            activation: Activation::SiluGated,
+            norm_type: NormType::RmsNorm,
+            use_rope: true,
+            position_embeddings: None,
+            qk_norm: false,
+            sliding_window: None,
+            head_dim: None,
         }
     }
 
@@ -159,6 +293,13 @@ impl ModelConfig {
             sub_ln: false,
             rope_scaling: None,
             architecture: Architecture::Llama,
+            activation: Activation::SiluGated,
+            norm_type: NormType::RmsNorm,
+            use_rope: true,
+            position_embeddings: None,
+            qk_norm: false,
+            sliding_window: None,
+            head_dim: None,
         }
     }
 
@@ -218,6 +359,39 @@ impl ModelConfig {
 
         let architecture = Architecture::from_huggingface(&v).unwrap_or(Architecture::Llama);
 
+        // Per-architecture defaults, overridable by explicit config keys.
+        let activation = v
+            .get("hidden_act")
+            .or_else(|| v.get("hidden_activation"))
+            .or_else(|| v.get("activation_function"))
+            .and_then(|a| a.as_str())
+            .map(|s| parse_activation(s, &architecture))
+            .unwrap_or_else(|| architecture.default_activation());
+
+        let norm_type = if v.get("layer_norm_eps").is_some() && !architecture.uses_rms_norm() {
+            NormType::LayerNorm
+        } else if architecture.uses_rms_norm() {
+            NormType::RmsNorm
+        } else {
+            NormType::LayerNorm
+        };
+
+        let use_rope = v.get("use_rope").and_then(|u| u.as_bool()).unwrap_or_else(|| architecture.uses_rope());
+        let position_embeddings = if architecture.uses_rope() {
+            None
+        } else {
+            // GPT-2/Phi embed learned positions up to max_position_embeddings.
+            v.get("position_embeddings")
+                .and_then(|p| p.as_u64())
+                .map(|n| n as usize)
+                .or(Some(max_seq_len))
+        };
+        let qk_norm = v.get("qk_norm").and_then(|q| q.as_bool()).unwrap_or_else(|| {
+            matches!(architecture, Architecture::Gemma)
+        });
+        let sliding_window = get_u64("sliding_window").map(Some).unwrap_or(None);
+        let head_dim = get_u64("head_dim").map(Some).unwrap_or(None);
+
         Ok(Self {
             vocab_size,
             hidden_size,
@@ -232,6 +406,13 @@ impl ModelConfig {
             sub_ln,
             rope_scaling,
             architecture,
+            activation,
+            norm_type,
+            use_rope,
+            position_embeddings,
+            qk_norm,
+            sliding_window,
+            head_dim,
         })
     }
 }
@@ -393,6 +574,94 @@ mod tests {
         assert_eq!(Architecture::from_gguf("mistral"), Architecture::Mistral);
         assert_eq!(Architecture::from_gguf("gpt2"), Architecture::Gpt2);
         assert_eq!(Architecture::from_gguf("phi"), Architecture::Phi);
+        assert_eq!(Architecture::from_gguf("gemma"), Architecture::Gemma);
         assert_eq!(Architecture::from_gguf("qwen2"), Architecture::Qwen2);
+    }
+
+    #[test]
+    fn test_architecture_parsing_gemma() {
+        let json = r#"{
+            "architectures": ["GemmaForCausalLM"],
+            "vocab_size": 256000,
+            "hidden_size": 3072,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 16,
+            "intermediate_size": 24576,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 8192,
+            "tie_word_embeddings": true,
+            "hidden_act": "gelu_pytorch_tanh"
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Gemma);
+        assert_eq!(config.activation, Activation::GeluGated);
+        assert_eq!(config.norm_type, NormType::RmsNorm);
+        assert!(config.qk_norm, "Gemma uses QK-norm by default");
+        assert!(config.use_rope, "Gemma uses RoPE");
+        assert!(config.tie_word_embeddings);
+    }
+
+    #[test]
+    fn test_gpt2_defaults_learned_positions_and_layernorm() {
+        let json = r#"{
+            "architectures": ["GPT2LMHeadModel"],
+            "vocab_size": 50257,
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 12,
+            "intermediate_size": 3072,
+            "layer_norm_eps": 1e-5,
+            "max_position_embeddings": 1024
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Gpt2);
+        assert!(!config.use_rope, "GPT-2 has no RoPE");
+        assert_eq!(config.norm_type, NormType::LayerNorm);
+        assert_eq!(config.activation, Activation::Gelu);
+        assert_eq!(config.position_embeddings, Some(1024));
+    }
+
+    #[test]
+    fn test_mistral_sliding_window() {
+        let json = r#"{
+            "architectures": ["MistralForCausalLM"],
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "intermediate_size": 14336,
+            "rms_norm_eps": 1e-5,
+            "max_position_embeddings": 32768,
+            "sliding_window": 4096
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.sliding_window, Some(4096));
+        assert_eq!(config.num_kv_heads(), 8);
+        assert_eq!(config.activation, Activation::SiluGated);
+    }
+
+    #[test]
+    fn test_gemma2_head_dim_override() {
+        let json = r#"{
+            "architectures": ["GemmaForCausalLM"],
+            "vocab_size": 256000,
+            "hidden_size": 3584,
+            "num_hidden_layers": 42,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 256,
+            "intermediate_size": 14336,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 8192
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.head_dim(), 256);
+        assert_eq!(config.head_dim, Some(256));
     }
 }

@@ -376,6 +376,12 @@ impl LlamaWeightMapper {
                 "attention.wo.weight" | "attn_output.weight" | "self_attn.o_proj.weight" => {
                     WeightTarget::AttentionO { layer_idx }
                 }
+                "attn_q_norm.weight" | "self_attn.q_norm.weight" => {
+                    WeightTarget::AttentionQNorm { layer_idx }
+                }
+                "attn_k_norm.weight" | "self_attn.k_norm.weight" => {
+                    WeightTarget::AttentionKNorm { layer_idx }
+                }
                 // FFN projections
                 "feed_forward.w1.weight" | "ffn_gate.weight" | "mlp.gate.weight"
                 | "mlp.gate_proj.weight" => WeightTarget::FfnGate { layer_idx },
@@ -438,17 +444,35 @@ impl LlamaWeightMapper {
 #[derive(Debug, PartialEq)]
 pub enum WeightTarget {
     Embedding,
+    PositionEmbedding,
     FinalNorm,
+    FinalNormBias,
     LmHead,
     AttentionQ { layer_idx: usize },
     AttentionK { layer_idx: usize },
     AttentionV { layer_idx: usize },
     AttentionO { layer_idx: usize },
+    AttentionQBias { layer_idx: usize },
+    AttentionKBias { layer_idx: usize },
+    AttentionVBias { layer_idx: usize },
+    AttentionOBias { layer_idx: usize },
+    /// Combined GPT-2 `c_attn.weight` — split into q/k/v row-wise.
+    AttentionQkvSplit { layer_idx: usize },
+    /// Combined GPT-2 `c_attn.bias` — split into q/k/v biases.
+    AttentionQkvBiasSplit { layer_idx: usize },
+    /// Gemma per-head Q/K norm weights.
+    AttentionQNorm { layer_idx: usize },
+    AttentionKNorm { layer_idx: usize },
     FfnGate { layer_idx: usize },
+    FfnGateBias { layer_idx: usize },
     FfnDown { layer_idx: usize },
+    FfnDownBias { layer_idx: usize },
     FfnUp { layer_idx: usize },
+    FfnUpBias { layer_idx: usize },
     AttnNorm { layer_idx: usize },
+    AttnNormBias { layer_idx: usize },
     FfnNorm { layer_idx: usize },
+    FfnNormBias { layer_idx: usize },
     Unknown(String),
 }
 
@@ -506,8 +530,14 @@ impl WeightMapper for Gpt2WeightMapper {
         if name == "transformer.wte.weight" || name == "wte" || name == "model.embed_tokens.weight" {
             return WeightTarget::Embedding;
         }
+        if name == "transformer.wpe.weight" || name == "wpe" {
+            return WeightTarget::PositionEmbedding;
+        }
         if name == "transformer.ln_f.weight" || name == "model.norm.weight" || name == "norm" {
             return WeightTarget::FinalNorm;
+        }
+        if name == "transformer.ln_f.bias" {
+            return WeightTarget::FinalNormBias;
         }
         if name == "lm_head.weight" {
             return WeightTarget::LmHead;
@@ -517,13 +547,18 @@ impl WeightMapper for Gpt2WeightMapper {
         if let Some(layer_idx) = layer_idx {
             let weight_name = Self::strip_gpt2_layer_prefix(name);
             return match weight_name.as_str() {
-                "attn.c_attn.weight" => WeightTarget::AttentionQ { layer_idx },
-                "attn.c_attn.bias" => WeightTarget::AttentionQ { layer_idx },
+                "attn.c_attn.weight" => WeightTarget::AttentionQkvSplit { layer_idx },
+                "attn.c_attn.bias" => WeightTarget::AttentionQkvBiasSplit { layer_idx },
                 "attn.c_proj.weight" => WeightTarget::AttentionO { layer_idx },
+                "attn.c_proj.bias" => WeightTarget::AttentionOBias { layer_idx },
                 "mlp.c_fc.weight" => WeightTarget::FfnUp { layer_idx },
+                "mlp.c_fc.bias" => WeightTarget::FfnUpBias { layer_idx },
                 "mlp.c_proj.weight" => WeightTarget::FfnDown { layer_idx },
+                "mlp.c_proj.bias" => WeightTarget::FfnDownBias { layer_idx },
                 "ln_1.weight" => WeightTarget::AttnNorm { layer_idx },
+                "ln_1.bias" => WeightTarget::AttnNormBias { layer_idx },
                 "ln_2.weight" => WeightTarget::FfnNorm { layer_idx },
+                "ln_2.bias" => WeightTarget::FfnNormBias { layer_idx },
                 _ => WeightTarget::Unknown(name.to_string()),
             };
         }
@@ -572,8 +607,14 @@ impl WeightMapper for PhiWeightMapper {
         if name == "transformer.embd.wte.weight" || name == "model.embed_tokens.weight" {
             return WeightTarget::Embedding;
         }
+        if name == "transformer.embd.wpe.weight" || name == "transformer.wpe.weight" {
+            return WeightTarget::PositionEmbedding;
+        }
         if name == "transformer.ln_f.weight" || name == "model.norm.weight" || name == "norm" {
             return WeightTarget::FinalNorm;
+        }
+        if name == "transformer.ln_f.bias" {
+            return WeightTarget::FinalNormBias;
         }
         if name == "lm_head.weight" || name == "model.lm_head.weight" {
             return WeightTarget::LmHead;
@@ -584,15 +625,25 @@ impl WeightMapper for PhiWeightMapper {
             let weight_name = Self::strip_phi_layer_prefix(name);
             return match weight_name.as_str() {
                 "attn.q_proj.weight" | "self_attn.q_proj.weight" => WeightTarget::AttentionQ { layer_idx },
+                "attn.q_proj.bias" | "self_attn.q_proj.bias" => WeightTarget::AttentionQBias { layer_idx },
                 "attn.k_proj.weight" | "self_attn.k_proj.weight" => WeightTarget::AttentionK { layer_idx },
+                "attn.k_proj.bias" | "self_attn.k_proj.bias" => WeightTarget::AttentionKBias { layer_idx },
                 "attn.v_proj.weight" | "self_attn.v_proj.weight" => WeightTarget::AttentionV { layer_idx },
+                "attn.v_proj.bias" | "self_attn.v_proj.bias" => WeightTarget::AttentionVBias { layer_idx },
                 "attn.dense.weight" | "attn.o_proj.weight" | "self_attn.o_proj.weight" => {
                     WeightTarget::AttentionO { layer_idx }
                 }
+                "attn.dense.bias" | "attn.o_proj.bias" | "self_attn.o_proj.bias" => {
+                    WeightTarget::AttentionOBias { layer_idx }
+                }
                 "mlp.fc1.weight" | "mlp.gate_proj.weight" => WeightTarget::FfnUp { layer_idx },
+                "mlp.fc1.bias" | "mlp.gate_proj.bias" => WeightTarget::FfnUpBias { layer_idx },
                 "mlp.fc2.weight" | "mlp.down_proj.weight" => WeightTarget::FfnDown { layer_idx },
+                "mlp.fc2.bias" | "mlp.down_proj.bias" => WeightTarget::FfnDownBias { layer_idx },
                 "ln.weight" | "input_layernorm.weight" => WeightTarget::AttnNorm { layer_idx },
+                "ln.bias" | "input_layernorm.bias" => WeightTarget::AttnNormBias { layer_idx },
                 "post_attention_layernorm.weight" => WeightTarget::FfnNorm { layer_idx },
+                "post_attention_layernorm.bias" => WeightTarget::FfnNormBias { layer_idx },
                 _ => WeightTarget::Unknown(name.to_string()),
             };
         }
@@ -611,6 +662,38 @@ impl WeightMapper for QwenWeightMapper {
     }
 }
 
+/// Gemma weight mapper. Gemma uses the LLaMA layout plus per-head Q/K norms.
+pub struct GemmaWeightMapper;
+
+impl WeightMapper for GemmaWeightMapper {
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget {
+        LlamaWeightMapper::map_weight(name, config)
+    }
+}
+
+/// Fallback mapper for unknown/custom architectures: tries the LLaMA layout
+/// first (the most common GGUF/HF convention), then the GPT-2 and Phi layouts.
+/// The first non-`Unknown` match wins.
+pub struct CustomWeightMapper;
+
+impl WeightMapper for CustomWeightMapper {
+    fn map_weight(name: &str, config: &crate::config::ModelConfig) -> WeightTarget {
+        let llama = LlamaWeightMapper::map_weight(name, config);
+        if !matches!(llama, WeightTarget::Unknown(_)) {
+            return llama;
+        }
+        let gpt2 = Gpt2WeightMapper::map_weight(name, config);
+        if !matches!(gpt2, WeightTarget::Unknown(_)) {
+            return gpt2;
+        }
+        let phi = PhiWeightMapper::map_weight(name, config);
+        if !matches!(phi, WeightTarget::Unknown(_)) {
+            return phi;
+        }
+        WeightTarget::Unknown(name.to_string())
+    }
+}
+
 /// Dispatch to the correct weight mapper based on the model architecture.
 pub fn map_weight_for_architecture(
     name: &str,
@@ -622,15 +705,16 @@ pub fn map_weight_for_architecture(
         Architecture::Mistral => MistralWeightMapper::map_weight(name, config),
         Architecture::Gpt2 => Gpt2WeightMapper::map_weight(name, config),
         Architecture::Phi => PhiWeightMapper::map_weight(name, config),
+        Architecture::Gemma => GemmaWeightMapper::map_weight(name, config),
         Architecture::Qwen2 | Architecture::Qwen3 => QwenWeightMapper::map_weight(name, config),
-        Architecture::Custom(_) => LlamaWeightMapper::map_weight(name, config),
+        Architecture::Custom(_) => CustomWeightMapper::map_weight(name, config),
     }
 }
 
 /// Load weights from a SafeTensors file into a `Model`.
 ///
 /// Iterates all tensors in the file, maps each name to a model weight via
-/// `LlamaWeightMapper`, and assigns it to the appropriate layer.
+/// `map_weight_for_architecture`, and assigns it to the appropriate layer.
 ///
 /// If `quantize` is provided, each weight tensor is quantized before assignment.
 pub fn load_safetensors_weights(
@@ -652,101 +736,12 @@ pub fn load_safetensors_weights(
             }
         };
 
-        match target {
-            WeightTarget::Embedding => {
-                model.embedding.weight = tensor;
-                stats.loaded += 1;
-            }
-            WeightTarget::FinalNorm => {
-                model.norm.weight = tensor;
-                stats.loaded += 1;
-            }
-            WeightTarget::LmHead => {
-                model.lm_head.weight = tensor;
-                stats.loaded += 1;
-            }
-            WeightTarget::AttentionQ { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.q_proj.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    log::warn!(
-                        "Layer index {} out of range (model has {} layers)",
-                        layer_idx,
-                        model.layers.len()
-                    );
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::AttentionK { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.k_proj.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::AttentionV { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.v_proj.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::AttentionO { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attention.o_proj.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::FfnGate { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_gate.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::FfnDown { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_down.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::FfnUp { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_up.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::AttnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.attn_norm.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::FfnNorm { layer_idx } => {
-                if let Some(layer) = model.layers.get_mut(layer_idx) {
-                    layer.ffn_norm.weight = tensor;
-                    stats.loaded += 1;
-                } else {
-                    stats.skipped.push(name.to_string());
-                }
-            }
-            WeightTarget::Unknown(unknown_name) => {
-                log::debug!("Skipping unknown tensor: {}", unknown_name);
-                stats.skipped.push(unknown_name);
-            }
+        if !apply_weight_target(model, &target, tensor) {
+            log::debug!("Skipping tensor '{}'", name);
+            stats.skipped.push(name.to_string());
+            continue;
         }
+        stats.loaded += 1;
     }
 
     // Handle tied word embeddings: if the config says to tie embeddings and
@@ -761,6 +756,188 @@ pub fn load_safetensors_weights(
     }
 
     stats
+}
+
+/// Assign a mapped tensor to its model weight. Returns `false` when the
+/// tensor could not be placed (unknown name, out-of-range layer, or a shape
+/// that does not fit the target) so callers can record it as skipped.
+///
+/// Shared by the SafeTensors loader and the server's GGUF loader so both
+/// paths handle every weight target identically.
+pub fn apply_weight_target(
+    model: &mut crate::model::Model,
+    target: &WeightTarget,
+    tensor: Tensor,
+) -> bool {
+    macro_rules! layer_weight {
+        ($layer_expr:expr) => {
+            if let Some(layer) = model.layers.get_mut($layer_expr) {
+                layer
+            } else {
+                log::warn!(
+                    "Layer index {} out of range (model has {} layers)",
+                    $layer_expr,
+                    model.layers.len()
+                );
+                return false;
+            }
+        };
+    }
+
+    match target {
+        WeightTarget::Embedding => {
+            model.embedding.weight = tensor;
+        }
+        WeightTarget::PositionEmbedding => {
+            model.pos_embedding = Some(tensor);
+        }
+        WeightTarget::FinalNorm => {
+            model.norm.weight = tensor;
+        }
+        WeightTarget::FinalNormBias => {
+            model.norm.bias = Some(tensor);
+        }
+        WeightTarget::LmHead => {
+            model.lm_head.weight = tensor;
+        }
+        WeightTarget::AttentionQ { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.q_proj.weight = tensor;
+        }
+        WeightTarget::AttentionK { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.k_proj.weight = tensor;
+        }
+        WeightTarget::AttentionV { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.v_proj.weight = tensor;
+        }
+        WeightTarget::AttentionO { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.o_proj.weight = tensor;
+        }
+        WeightTarget::AttentionQBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.q_proj.bias = Some(tensor);
+        }
+        WeightTarget::AttentionKBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.k_proj.bias = Some(tensor);
+        }
+        WeightTarget::AttentionVBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.v_proj.bias = Some(tensor);
+        }
+        WeightTarget::AttentionOBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attention.o_proj.bias = Some(tensor);
+        }
+        // GPT-2 combined c_attn.weight is [3*hidden, hidden]; split row-wise
+        // into the q/k/v projections ([hidden, hidden] each).
+        WeightTarget::AttentionQkvSplit { layer_idx } => {
+            let hidden = model.config.hidden_size;
+            if tensor.shape()[0] != 3 * hidden {
+                log::warn!(
+                    "c_attn.weight shape {:?} does not match 3x hidden {}",
+                    tensor.shape(),
+                    hidden
+                );
+                return false;
+            }
+            let data = tensor.as_f32_slice();
+            let chunk = hidden * hidden;
+            let (q, rest) = data.split_at(chunk);
+            let (k, v) = rest.split_at(chunk);
+            let l = layer_weight!(*layer_idx);
+            l.attention.q_proj.weight = Tensor::from_slice(q, &[hidden, hidden]);
+            l.attention.k_proj.weight = Tensor::from_slice(k, &[hidden, hidden]);
+            l.attention.v_proj.weight = Tensor::from_slice(v, &[hidden, hidden]);
+        }
+        // GPT-2 combined c_attn.bias is [3*hidden]; split into q/k/v biases.
+        WeightTarget::AttentionQkvBiasSplit { layer_idx } => {
+            let hidden = model.config.hidden_size;
+            if tensor.shape()[0] != 3 * hidden {
+                log::warn!(
+                    "c_attn.bias shape {:?} does not match 3x hidden {}",
+                    tensor.shape(),
+                    hidden
+                );
+                return false;
+            }
+            let data = tensor.as_f32_slice();
+            let (q, rest) = data.split_at(hidden);
+            let (k, v) = rest.split_at(hidden);
+            let l = layer_weight!(*layer_idx);
+            l.attention.q_proj.bias = Some(Tensor::from_slice(q, &[hidden]));
+            l.attention.k_proj.bias = Some(Tensor::from_slice(k, &[hidden]));
+            l.attention.v_proj.bias = Some(Tensor::from_slice(v, &[hidden]));
+        }
+        WeightTarget::AttentionQNorm { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            match &mut l.attention.q_norm {
+                Some(norm) => norm.weight = tensor,
+                None => {
+                    log::warn!("Layer {} has no q_norm slot (qk_norm disabled)", layer_idx);
+                    return false;
+                }
+            }
+        }
+        WeightTarget::AttentionKNorm { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            match &mut l.attention.k_norm {
+                Some(norm) => norm.weight = tensor,
+                None => {
+                    log::warn!("Layer {} has no k_norm slot (qk_norm disabled)", layer_idx);
+                    return false;
+                }
+            }
+        }
+        WeightTarget::FfnGate { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_gate.weight = tensor;
+        }
+        WeightTarget::FfnGateBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_gate.bias = Some(tensor);
+        }
+        WeightTarget::FfnDown { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_down.weight = tensor;
+        }
+        WeightTarget::FfnDownBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_down.bias = Some(tensor);
+        }
+        WeightTarget::FfnUp { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_up.weight = tensor;
+        }
+        WeightTarget::FfnUpBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_up.bias = Some(tensor);
+        }
+        WeightTarget::AttnNorm { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attn_norm.weight = tensor;
+        }
+        WeightTarget::AttnNormBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.attn_norm.bias = Some(tensor);
+        }
+        WeightTarget::FfnNorm { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_norm.weight = tensor;
+        }
+        WeightTarget::FfnNormBias { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            l.ffn_norm.bias = Some(tensor);
+        }
+        WeightTarget::Unknown(unknown_name) => {
+            log::debug!("Skipping unknown tensor: {}", unknown_name);
+            return false;
+        }
+    }
+    true
 }
 
 /// Statistics from loading weights into a model.
@@ -1323,6 +1500,165 @@ mod tests {
         file
     }
 
+    fn create_gemma_safetensors() -> Vec<u8> {
+        let config = crate::config::ModelConfig::tiny_test();
+        let mut tensors: Vec<(String, Vec<f32>, Vec<usize>)> = Vec::new();
+
+        tensors.push((
+            "model.embed_tokens.weight".into(),
+            vec![0.2; config.vocab_size * config.hidden_size],
+            vec![config.vocab_size, config.hidden_size],
+        ));
+        tensors.push((
+            "model.norm.weight".into(),
+            vec![1.0; config.hidden_size],
+            vec![config.hidden_size],
+        ));
+        tensors.push((
+            "lm_head.weight".into(),
+            vec![0.3; config.vocab_size * config.hidden_size],
+            vec![config.vocab_size, config.hidden_size],
+        ));
+
+        for i in 0..config.num_layers {
+            let h = config.hidden_size;
+            let kv = config.num_kv_heads() * config.head_dim();
+            let inter = config.intermediate_size;
+            let head_dim = config.head_dim();
+
+            tensors.push((
+                format!("model.layers.{}.self_attn.q_proj.weight", i),
+                vec![0.01; kv * h],
+                vec![kv, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.self_attn.k_proj.weight", i),
+                vec![0.02; kv * h],
+                vec![kv, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.self_attn.v_proj.weight", i),
+                vec![0.03; kv * h],
+                vec![kv, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.self_attn.o_proj.weight", i),
+                vec![0.04; kv * h],
+                vec![kv, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.self_attn.q_norm.weight", i),
+                vec![1.0; config.num_heads * head_dim],
+                vec![config.num_heads, head_dim],
+            ));
+            tensors.push((
+                format!("model.layers.{}.self_attn.k_norm.weight", i),
+                vec![1.0; config.num_heads * head_dim],
+                vec![config.num_heads, head_dim],
+            ));
+            tensors.push((
+                format!("model.layers.{}.mlp.gate_proj.weight", i),
+                vec![0.05; inter * h],
+                vec![inter, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.mlp.up_proj.weight", i),
+                vec![0.06; inter * h],
+                vec![inter, h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.mlp.down_proj.weight", i),
+                vec![0.07; h * inter],
+                vec![h, inter],
+            ));
+            tensors.push((
+                format!("model.layers.{}.input_layernorm.weight", i),
+                vec![1.0; h],
+                vec![h],
+            ));
+            tensors.push((
+                format!("model.layers.{}.post_attention_layernorm.weight", i),
+                vec![1.0; h],
+                vec![h],
+            ));
+        }
+
+        let mut header_map = serde_json::Map::new();
+        let mut data_blob = Vec::new();
+        let mut offset = 0usize;
+
+        for (name, data, shape) in &tensors {
+            let bytes: Vec<u8> = data.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let len = bytes.len();
+            header_map.insert(
+                name.clone(),
+                serde_json::json!({
+                    "dtype": "F32",
+                    "shape": shape,
+                    "data_offsets": [offset, offset + len]
+                }),
+            );
+            data_blob.extend_from_slice(&bytes);
+            offset += len;
+        }
+
+        let header = serde_json::Value::Object(header_map);
+        let header_str = serde_json::to_string(&header).unwrap();
+        let header_bytes = header_str.as_bytes();
+
+        let mut file = Vec::new();
+        file.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+        file.extend_from_slice(header_bytes);
+        file.extend_from_slice(&data_blob);
+        file
+    }
+
+    #[test]
+    fn test_load_gemma_weights_into_model_end_to_end() {
+        let data = create_gemma_safetensors();
+        let loader = SafeTensorsLoader::from_bytes(&data).unwrap();
+        let mut config = crate::config::ModelConfig::tiny_test();
+        config.architecture = crate::config::Architecture::Gemma;
+        config.qk_norm = true;
+        config.activation = crate::config::Activation::GeluGated;
+
+        let mut model = crate::model::Model::new(config.clone());
+        let stats = load_safetensors_weights(&mut model, &loader, &config, None);
+
+        // embedding + norm + lm_head + 2 layers * (4 attn + 2 qk-norm + 3 ffn + 2 ln) = 3 + 22 = 25
+        assert_eq!(stats.loaded, 25, "all Gemma weights should load");
+        assert!(stats.skipped.is_empty());
+
+        let emb = model.embedding.weight.as_f32_slice();
+        assert!(emb.iter().all(|&x| (x - 0.2).abs() < 1e-6), "embedding from embed_tokens");
+
+        let norm = model.norm.weight.as_f32_slice();
+        assert!(norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "final norm from model.norm");
+
+        let lm = model.lm_head.weight.as_f32_slice();
+        assert!(lm.iter().all(|&x| (x - 0.3).abs() < 1e-6), "lm_head from lm_head.weight");
+
+        let q = model.layers[0].attention.q_proj.weight.as_f32_slice();
+        assert!(q.iter().all(|&x| (x - 0.01).abs() < 1e-6), "q_proj");
+
+        let q_norm = model.layers[0].attention.q_norm.as_ref().unwrap().weight.as_f32_slice();
+        assert!(q_norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "q_norm loaded");
+        assert!(
+            model.layers[0].attention.k_norm.is_some(),
+            "k_norm slot present with qk_norm enabled"
+        );
+
+        let gate = model.layers[1].ffn_gate.weight.as_f32_slice();
+        assert!(gate.iter().all(|&x| (x - 0.05).abs() < 1e-6), "ffn_gate from gate_proj");
+
+        let down = model.layers[1].ffn_down.weight.as_f32_slice();
+        assert!(down.iter().all(|&x| (x - 0.07).abs() < 1e-6), "ffn_down from down_proj");
+
+        // Smoke test: a forward pass with QK-norm enabled must run.
+        let logits = model.forward(&[0u32, 1, 2]);
+        assert_eq!(logits.shape(), &[3, config.vocab_size]);
+    }
+
     #[test]
     fn test_load_gpt2_weights_into_model_end_to_end() {
         let data = create_gpt2_safetensors();
@@ -1434,7 +1770,7 @@ mod tests {
         );
         assert_eq!(
             Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_attn.weight", &config),
-            WeightTarget::AttentionQ { layer_idx: 0 }
+            WeightTarget::AttentionQkvSplit { layer_idx: 0 }
         );
         assert_eq!(
             Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_proj.weight", &config),
@@ -1456,10 +1792,10 @@ mod tests {
             Gpt2WeightMapper::map_weight("transformer.h.3.ln_2.weight", &config),
             WeightTarget::FfnNorm { layer_idx: 3 }
         );
-        assert!(matches!(
+        assert_eq!(
             Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_attn.bias", &config),
-            WeightTarget::AttentionQ { layer_idx: 0 }
-        ));
+            WeightTarget::AttentionQkvBiasSplit { layer_idx: 0 }
+        );
     }
 
     #[test]
@@ -1509,6 +1845,52 @@ mod tests {
     }
 
     #[test]
+    fn test_gemma_weight_mapper() {
+        let config = crate::config::ModelConfig::tiny_test();
+
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.embed_tokens.weight", &config),
+            WeightTarget::Embedding
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.norm.weight", &config),
+            WeightTarget::FinalNorm
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("lm_head.weight", &config),
+            WeightTarget::LmHead
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.0.self_attn.q_proj.weight", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.1.self_attn.q_norm.weight", &config),
+            WeightTarget::AttentionQNorm { layer_idx: 1 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.1.self_attn.k_norm.weight", &config),
+            WeightTarget::AttentionKNorm { layer_idx: 1 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.2.mlp.gate_proj.weight", &config),
+            WeightTarget::FfnGate { layer_idx: 2 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.2.mlp.down_proj.weight", &config),
+            WeightTarget::FfnDown { layer_idx: 2 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.3.input_layernorm.weight", &config),
+            WeightTarget::AttnNorm { layer_idx: 3 }
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("model.layers.3.post_attention_layernorm.weight", &config),
+            WeightTarget::FfnNorm { layer_idx: 3 }
+        );
+    }
+
+    #[test]
     fn test_architecture_dispatch() {
         let config = crate::config::ModelConfig::tiny_test();
 
@@ -1523,7 +1905,7 @@ mod tests {
         gpt2_config.architecture = crate::config::Architecture::Gpt2;
         assert_eq!(
             map_weight_for_architecture("transformer.h.0.attn.c_attn.weight", &gpt2_config),
-            WeightTarget::AttentionQ { layer_idx: 0 }
+            WeightTarget::AttentionQkvSplit { layer_idx: 0 }
         );
         // Llama-style names are Unknown for GPT-2
         assert!(matches!(
