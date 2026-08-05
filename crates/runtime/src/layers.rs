@@ -3,6 +3,25 @@ use std::cell::OnceCell;
 
 use crate::GpuContext;
 
+/// Add a 1-D bias `[n]` to every row of a `[m, n]` tensor in place.
+/// Falls back to `add_assign` for already-compatible shapes.
+fn add_bias_1d(result: &mut Tensor, bias: &Tensor) {
+    let m = result.shape()[0];
+    let n = result.shape().last().copied().unwrap_or(1);
+    let b = bias.as_f32_slice();
+    if bias.shape().len() == 1 && bias.shape()[0] == n {
+        let out = result.as_f32_slice_mut();
+        for row in 0..m {
+            let base = row * n;
+            for j in 0..n {
+                out[base + j] += b[j];
+            }
+        }
+    } else {
+        result.add_assign(bias).unwrap();
+    }
+}
+
 pub struct Linear {
     pub weight: Tensor,
     pub bias: Option<Tensor>,
@@ -43,7 +62,7 @@ impl Linear {
             bitllm_tensor::simd::f32_matmul(a, b, out, m, k, n);
         }
         if let Some(ref bias) = self.bias {
-            result.add_assign(bias).unwrap();
+            add_bias_1d(&mut result, bias);
         }
         result
     }
@@ -61,10 +80,9 @@ impl Linear {
                 self.forward_cpu(input)
             });
         if let Some(ref bias) = self.bias {
-            result = ctx.add(&result, bias).unwrap_or_else(|e| {
-                log::warn!("GPU add failed, falling back to CPU: {}", e);
-                result.add(bias).unwrap()
-            });
+            let mut out = result.clone();
+            add_bias_1d(&mut out, bias);
+            result = out;
         }
         result
     }

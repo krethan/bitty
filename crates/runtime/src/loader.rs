@@ -393,7 +393,8 @@ impl LlamaWeightMapper {
                 "attention_norm.weight" | "attn_norm.weight" | "input_layernorm.weight" => {
                     WeightTarget::AttnNorm { layer_idx }
                 }
-                "ffn_norm.weight" | "mlp_norm.weight" | "post_attention_layernorm.weight" => {
+                "ffn_norm.weight" | "mlp_norm.weight" | "post_attention_layernorm.weight"
+                | "pre_feedforward_layernorm.weight" => {
                     WeightTarget::FfnNorm { layer_idx }
                 }
                 _ => WeightTarget::Unknown(name.to_string()),
@@ -587,7 +588,12 @@ pub struct PhiWeightMapper;
 impl PhiWeightMapper {
     fn parse_phi_layer_index(name: &str) -> Option<usize> {
         let parts: Vec<&str> = name.split('.').collect();
+        // Legacy phi-1/2: `transformer.h.N.*`
         if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[2].parse::<usize>().ok();
+        }
+        // New-style phi-1/2 and phi-3: `model.layers.N.*`
+        if parts.len() >= 4 && parts[0] == "model" && parts[1] == "layers" {
             return parts[2].parse::<usize>().ok();
         }
         None
@@ -596,6 +602,9 @@ impl PhiWeightMapper {
     fn strip_phi_layer_prefix(name: &str) -> String {
         let parts: Vec<&str> = name.split('.').collect();
         if parts.len() >= 4 && parts[0] == "transformer" && parts[1] == "h" {
+            return parts[3..].join(".");
+        }
+        if parts.len() >= 4 && parts[0] == "model" && parts[1] == "layers" {
             return parts[3..].join(".");
         }
         name.to_string()
@@ -610,10 +619,14 @@ impl WeightMapper for PhiWeightMapper {
         if name == "transformer.embd.wpe.weight" || name == "transformer.wpe.weight" {
             return WeightTarget::PositionEmbedding;
         }
-        if name == "transformer.ln_f.weight" || name == "model.norm.weight" || name == "norm" {
+        if name == "transformer.ln_f.weight"
+            || name == "model.norm.weight"
+            || name == "model.final_layernorm.weight"
+            || name == "norm"
+        {
             return WeightTarget::FinalNorm;
         }
-        if name == "transformer.ln_f.bias" {
+        if name == "transformer.ln_f.bias" || name == "model.final_layernorm.bias" {
             return WeightTarget::FinalNormBias;
         }
         if name == "lm_head.weight" || name == "model.lm_head.weight" {
@@ -630,10 +643,12 @@ impl WeightMapper for PhiWeightMapper {
                 "attn.k_proj.bias" | "self_attn.k_proj.bias" => WeightTarget::AttentionKBias { layer_idx },
                 "attn.v_proj.weight" | "self_attn.v_proj.weight" => WeightTarget::AttentionV { layer_idx },
                 "attn.v_proj.bias" | "self_attn.v_proj.bias" => WeightTarget::AttentionVBias { layer_idx },
-                "attn.dense.weight" | "attn.o_proj.weight" | "self_attn.o_proj.weight" => {
+                "attn.dense.weight" | "attn.o_proj.weight" | "self_attn.o_proj.weight"
+                | "self_attn.dense.weight" => {
                     WeightTarget::AttentionO { layer_idx }
                 }
-                "attn.dense.bias" | "attn.o_proj.bias" | "self_attn.o_proj.bias" => {
+                "attn.dense.bias" | "attn.o_proj.bias" | "self_attn.o_proj.bias"
+                | "self_attn.dense.bias" => {
                     WeightTarget::AttentionOBias { layer_idx }
                 }
                 "mlp.fc1.weight" | "mlp.gate_proj.weight" => WeightTarget::FfnUp { layer_idx },
@@ -724,9 +739,13 @@ pub fn load_safetensors_weights(
     quantize: Option<&str>,
 ) -> LoadingStats {
     let mut stats = LoadingStats::default();
+    let mut lm_head_loaded = false;
 
     for name in loader.tensor_names() {
         let target = map_weight_for_architecture(name, config);
+        if matches!(target, WeightTarget::LmHead) {
+            lm_head_loaded = true;
+        }
         let tensor = match loader.load_tensor(name) {
             Ok(t) => t,
             Err(e) => {
@@ -746,7 +765,7 @@ pub fn load_safetensors_weights(
 
     // Handle tied word embeddings: if the config says to tie embeddings and
     // the model doesn't have a separate lm_head weight, copy embedding to lm_head.
-    if config.tie_word_embeddings {
+    if config.tie_word_embeddings || !lm_head_loaded {
         model.tie_embeddings();
     }
 
@@ -1841,6 +1860,31 @@ mod tests {
         assert_eq!(
             PhiWeightMapper::map_weight("transformer.h.5.ln.weight", &config),
             WeightTarget::AttnNorm { layer_idx: 5 }
+        );
+        // New-style phi-1/phi-2 checkpoints use `model.layers.N.*`.
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.layers.0.self_attn.q_proj.weight", &config),
+            WeightTarget::AttentionQ { layer_idx: 0 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.layers.1.self_attn.dense.weight", &config),
+            WeightTarget::AttentionO { layer_idx: 1 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.layers.2.mlp.fc1.weight", &config),
+            WeightTarget::FfnUp { layer_idx: 2 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.layers.2.mlp.fc2.weight", &config),
+            WeightTarget::FfnDown { layer_idx: 2 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.layers.3.input_layernorm.weight", &config),
+            WeightTarget::AttnNorm { layer_idx: 3 }
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("model.final_layernorm.weight", &config),
+            WeightTarget::FinalNorm
         );
     }
 
