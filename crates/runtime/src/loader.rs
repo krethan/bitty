@@ -376,6 +376,18 @@ impl LlamaWeightMapper {
                 "attention.wo.weight" | "attn_output.weight" | "self_attn.o_proj.weight" => {
                     WeightTarget::AttentionO { layer_idx }
                 }
+                "self_attn.q_proj.bias" | "attn_q.bias" => {
+                    WeightTarget::AttentionQBias { layer_idx }
+                }
+                "self_attn.k_proj.bias" | "attn_k.bias" => {
+                    WeightTarget::AttentionKBias { layer_idx }
+                }
+                "self_attn.v_proj.bias" | "attn_v.bias" => {
+                    WeightTarget::AttentionVBias { layer_idx }
+                }
+                "self_attn.o_proj.bias" | "attn_output.bias" => {
+                    WeightTarget::AttentionOBias { layer_idx }
+                }
                 "attn_q_norm.weight" | "self_attn.q_norm.weight" => {
                     WeightTarget::AttentionQNorm { layer_idx }
                 }

@@ -143,11 +143,14 @@ fn load_gguf_weights(
         };
 
         let tensor = to_torch_layout(tensor);
-        // llama.cpp stores q/k rows RoPE-half interleaved; undo it so the
-        // projections match torch (safetensors) layout.
+        // llama.cpp stores q/k rows RoPE-half interleaved for RoPE models; undo
+        // it so the projections match torch (safetensors) layout. Non-RoPE
+        // architectures (GPT-2, Phi) have plain q/k in GGUF.
         let tensor = match target {
             bitllm_runtime::WeightTarget::AttentionQ { .. }
-            | bitllm_runtime::WeightTarget::AttentionK { .. } => {
+            | bitllm_runtime::WeightTarget::AttentionK { .. }
+                if config.use_rope =>
+            {
                 uninterleave_rope_heads(&tensor, config.head_dim())
             }
             _ => tensor,

@@ -29,6 +29,14 @@ pub struct TokenizerConfig {
     pub bos_token: Option<u32>,
     pub eos_token: Option<u32>,
     pub unk_token: Option<u32>,
+    /// Whether the vocabulary is GPT-2 byte-level encoded (space → `Ġ`,
+    /// newline → `Ċ`, …). When set, text is pre-tokenized with the GPT-2
+    /// regex and byte-encoded before BPE merges, and tokens are byte-decoded
+    /// on decode.
+    pub byte_level: bool,
+    /// Whether the pre-tokenizer splits digit runs into individual digits
+    /// (HuggingFace `Digits(individual_digits=true)`).
+    pub digits_individual: bool,
 }
 
 pub struct BpeTokenizer {
@@ -36,15 +44,69 @@ pub struct BpeTokenizer {
     inv_vocab: HashMap<u32, String>,
     merges: Vec<(String, String)>,
     config: TokenizerConfig,
+    byte_encoder: HashMap<u8, char>,
+    byte_decoder: HashMap<char, u8>,
+}
+
+/// GPT-2 byte-to-unicode mapping. Bytes that already have printable
+/// characters keep them; the remaining bytes (space, newline, control, high
+/// bytes) map into U+0100..U+0180. Space → `Ġ` (U+0120), newline → `Ċ`
+/// (U+010A), tab → `ĉ` (U+0109).
+fn bytes_to_unicode() -> (HashMap<u8, char>, HashMap<char, u8>) {
+    let mut bs: Vec<u8> = Vec::new();
+    let mut cs: Vec<u16> = Vec::new();
+    for b in 33..=126 {
+        bs.push(b);
+        cs.push(b as u16);
+    }
+    for b in 161..=172 {
+        bs.push(b);
+        cs.push(b as u16);
+    }
+    for b in 174..=255 {
+        bs.push(b);
+        cs.push(b as u16);
+    }
+    let mut n: u16 = 0;
+    for b in 0..=255u8 {
+        if !bs.contains(&b) {
+            bs.push(b);
+            cs.push(256 + n);
+            n += 1;
+        }
+    }
+    let encoder: HashMap<u8, char> = bs
+        .iter()
+        .zip(cs.iter())
+        .map(|(&b, &c)| (b, char::from_u32(c as u32).unwrap()))
+        .collect();
+    let decoder = encoder.iter().map(|(&b, &c)| (c, b)).collect();
+    (encoder, decoder)
+}
+
+fn is_letter(c: char) -> bool {
+    c.is_alphabetic()
+}
+
+fn is_number(c: char) -> bool {
+    c.is_numeric()
+}
+
+/// A non-whitespace character that is neither a letter nor a number.
+fn is_punct(c: char) -> bool {
+    !c.is_whitespace() && !is_letter(c) && !is_number(c)
 }
 
 impl BpeTokenizer {
     pub fn new(config: TokenizerConfig) -> Self {
+        let (byte_encoder, byte_decoder) = bytes_to_unicode();
         Self {
             vocab: HashMap::new(),
             inv_vocab: HashMap::new(),
             merges: Vec::new(),
             config,
+            byte_encoder,
+            byte_decoder,
         }
     }
 
@@ -57,11 +119,14 @@ impl BpeTokenizer {
             vocab_size: vocab.len(),
             ..Default::default()
         };
+        let (byte_encoder, byte_decoder) = bytes_to_unicode();
         Self {
             vocab,
             inv_vocab,
             merges,
             config,
+            byte_encoder,
+            byte_decoder,
         }
     }
 
@@ -75,11 +140,14 @@ impl BpeTokenizer {
             vocab_size: vocab.len(),
             ..config
         };
+        let (byte_encoder, byte_decoder) = bytes_to_unicode();
         Self {
             vocab,
             inv_vocab,
             merges,
             config,
+            byte_encoder,
+            byte_decoder,
         }
     }
 
@@ -92,7 +160,11 @@ impl BpeTokenizer {
     }
 
     pub fn encode(&self, text: &str) -> Vec<u32> {
-        let words = self.regex_split(text);
+        let words = if self.config.byte_level {
+            self.pretokenize_byte_level(text)
+        } else {
+            self.regex_split(text)
+        };
         let mut tokens = Vec::new();
 
         for word in words {
@@ -149,7 +221,7 @@ impl BpeTokenizer {
     }
 
     pub fn decode(&self, tokens: &[u32]) -> Result<String, TokenizerError> {
-        let mut result = String::new();
+        let mut result = Vec::new();
         for &token in tokens {
             if token == self.config.bos_token.unwrap_or(u32::MAX) {
                 continue;
@@ -158,13 +230,30 @@ impl BpeTokenizer {
                 break;
             }
             match self.inv_vocab.get(&token) {
-                Some(s) => result.push_str(s),
+                Some(s) => {
+                    if self.config.byte_level {
+                        // Byte-decoded tokens back to raw bytes. Characters that
+                        // are not part of the byte-level alphabet (special
+                        // tokens, literals) are re-emitted as UTF-8.
+                        for ch in s.chars() {
+                            match self.byte_decoder.get(&ch) {
+                                Some(&b) => result.push(b),
+                                None => {
+                                    let mut buf = [0u8; 4];
+                                    result.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                                }
+                            }
+                        }
+                    } else {
+                        result.extend_from_slice(s.as_bytes());
+                    }
+                }
                 None => {
                     return Err(TokenizerError::UnknownToken(format!("token_id={}", token)));
                 }
             }
         }
-        Ok(result)
+        Ok(String::from_utf8_lossy(&result).into_owned())
     }
 
     pub fn encode_with_special(&self, text: &str, add_bos: bool, add_eos: bool) -> Vec<u32> {
@@ -204,6 +293,171 @@ impl BpeTokenizer {
         }
 
         words
+    }
+
+    /// GPT-2 byte-level pre-tokenization. Splits the text with the standard
+    /// GPT-2 regex, byte-encodes each chunk (space → `Ġ`, …), and optionally
+    /// isolates individual digits. Mirrors the HuggingFace
+    /// `Split(GPT2 regex)` + `ByteLevel` pre-tokenizer.
+    fn pretokenize_byte_level(&self, text: &str) -> Vec<String> {
+        let chars: Vec<char> = text.chars().collect();
+        let mut chunks: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+
+            // `'(?:[sdmt]|ll|ve|re)` — apostrophe contractions, case-insensitive.
+            if c == '\'' {
+                if let Some(contraction_len) = Self::contraction_len(&chars, i) {
+                    chunks.push(self.byte_encode(&chars[i..i + contraction_len].iter().collect::<String>()));
+                    i += contraction_len;
+                    continue;
+                }
+            }
+
+            // ` ?\p{L}+` — one optional leading whitespace + a letter run.
+            if c.is_whitespace() && i + 1 < chars.len() && is_letter(chars[i + 1]) {
+                let mut j = i + 2;
+                while j < chars.len() && is_letter(chars[j]) {
+                    j += 1;
+                }
+                chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                i = j;
+                continue;
+            }
+            if is_letter(c) {
+                let mut j = i + 1;
+                while j < chars.len() && is_letter(chars[j]) {
+                    j += 1;
+                }
+                chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                i = j;
+                continue;
+            }
+
+            // `\p{N}+` — a digit run, optionally split into single digits.
+            if is_number(c) {
+                let mut j = i + 1;
+                while j < chars.len() && is_number(chars[j]) {
+                    j += 1;
+                }
+                if self.config.digits_individual {
+                    for d in &chars[i..j] {
+                        chunks.push(self.byte_encode(&d.to_string()));
+                    }
+                } else {
+                    chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                }
+                i = j;
+                continue;
+            }
+
+            // ` ?[^\s\p{L}\p{N}]+[\r\n]*` — punctuation runs, optionally
+            // preceded by one whitespace, with trailing CR/LF.
+            if c.is_whitespace() && i + 1 < chars.len() && is_punct(chars[i + 1]) {
+                let mut j = i + 2;
+                while j < chars.len() && is_punct(chars[j]) {
+                    j += 1;
+                }
+                while j < chars.len() && (chars[j] == '\r' || chars[j] == '\n') {
+                    j += 1;
+                }
+                chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                i = j;
+                continue;
+            }
+            if is_punct(c) {
+                let mut j = i + 1;
+                while j < chars.len() && is_punct(chars[j]) {
+                    j += 1;
+                }
+                while j < chars.len() && (chars[j] == '\r' || chars[j] == '\n') {
+                    j += 1;
+                }
+                chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                i = j;
+                continue;
+            }
+
+            // `\s+(?!\S)` then `\s+` — whitespace runs. When the run is
+            // followed by a non-whitespace char, the last whitespace char is
+            // left for the next match (so ` ?\p{L}+` can attach it to the
+            // following word).
+            if c.is_whitespace() {
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                if j < chars.len() && !chars[j].is_whitespace() && j > i + 1 {
+                    j -= 1;
+                }
+                chunks.push(self.byte_encode(&chars[i..j].iter().collect::<String>()));
+                i = j;
+                continue;
+            }
+
+            chunks.push(self.byte_encode(&c.to_string()));
+            i += 1;
+        }
+        chunks
+    }
+
+    /// Length (in chars) of an apostrophe contraction at `i` (`'s`, `'t`,
+    /// `'re`, `'ve`, `'m`, `'ll`, `'d`), case-insensitively, or `None`.
+    fn contraction_len(chars: &[char], i: usize) -> Option<usize> {
+        fn eq(a: char, b: char) -> bool {
+            a == b || a.to_ascii_lowercase() == b
+        }
+        let rest = &chars[i + 1..];
+        const TWO: [&[char]; 4] = [&['s'], &['t'], &['m'], &['d']];
+        for suffix in TWO {
+            if rest.len() >= 1 && eq(rest[0], suffix[0]) {
+                return Some(2);
+            }
+        }
+        const THREE: [&[char]; 3] = [&['l', 'l'], &['v', 'e'], &['r', 'e']];
+        for suffix in THREE {
+            if rest.len() >= 2 && eq(rest[0], suffix[0]) && eq(rest[1], suffix[1]) {
+                return Some(3);
+            }
+        }
+        None
+    }
+
+    fn byte_encode(&self, chunk: &str) -> String {
+        chunk
+            .bytes()
+            .map(|b| self.byte_encoder.get(&b).copied().unwrap_or(b as char))
+            .collect()
+    }
+
+    /// Inspect the `pre_tokenizer` section of a HuggingFace tokenizer.json to
+    /// decide whether to use GPT-2 byte-level encoding and/or isolate digits.
+    fn pretokenizer_flags(value: &serde_json::Value) -> (bool, bool) {
+        fn flags_for(node: &serde_json::Value) -> (bool, bool) {
+            let mut flags = (false, false);
+            if let Some(kind) = node.get("type").and_then(|t| t.as_str()) {
+                match kind {
+                    "ByteLevel" => flags.0 = true,
+                    "Digits" => {
+                        flags.1 = node
+                            .get("individual_digits")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(seq) = node.get("pretokenizers").and_then(|v| v.as_array()) {
+                for sub in seq {
+                    let (a, b) = flags_for(sub);
+                    flags.0 |= a;
+                    flags.1 |= b;
+                }
+            }
+            flags
+        }
+        value.get("pre_tokenizer").map(flags_for).unwrap_or((false, false))
     }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, TokenizerError> {
@@ -274,6 +528,9 @@ impl BpeTokenizer {
         let mut bos_token = None;
         let mut eos_token = None;
 
+        // Whether the pre-tokenizer is GPT-2 byte-level and/or isolates digits.
+        let (byte_level, digits_individual) = Self::pretokenizer_flags(&value);
+
         if let Some(added) = value.get("added_tokens") {
             if let Some(arr) = added.as_array() {
                 for token in arr {
@@ -300,6 +557,8 @@ impl BpeTokenizer {
             bos_token,
             eos_token,
             unk_token: vocab.get("<unk>").copied(),
+            byte_level,
+            digits_individual,
         };
 
         Ok(Self::from_vocab_and_merges_with_config(
@@ -357,6 +616,8 @@ impl BpeTokenizer {
             bos_token,
             eos_token,
             unk_token,
+            byte_level: false,
+            digits_individual: false,
         };
 
         // SentencePiece doesn't expose merges in the same way as BPE
@@ -698,6 +959,36 @@ mod tests {
         let tok = BpeTokenizer::new(TokenizerConfig::default());
         let words = tok.regex_split("hello, world!");
         assert_eq!(words, vec!["hello", ",", " ", "world", "!"]);
+    }
+
+    #[test]
+    fn test_byte_level_no_unk_for_spaces() {
+        // Verify that byte-level mode does not emit unk tokens for space-prefixed
+        // words (the bug that caused Qwen ppl to explode).
+        let mut vocab = HashMap::new();
+        // All printable ASCII + Ġ and Ċ
+        for b in 33u8..=126 {
+            vocab.insert((b as char).to_string(), (b - 33) as u32);
+        }
+        vocab.insert("Ġ".to_string(), 100);
+        vocab.insert("Ġhello".to_string(), 101);
+        vocab.insert("Ġworld".to_string(), 102);
+        vocab.insert("hello".to_string(), 103);
+        vocab.insert("world".to_string(), 104);
+        let merges = vec![];
+        let mut config = TokenizerConfig::default();
+        config.byte_level = true;
+        let tok = BpeTokenizer::from_vocab_and_merges_with_config(vocab, merges, config);
+
+        let encoded = tok.encode("hello world");
+        // With byte-level mode, " world" → Ġworld (no unk). Without byte-level,
+        // the bare " " chunk would produce unk (if unk_token is set).
+        if let Some(unk_id) = tok.config().unk_token {
+            assert!(
+                !encoded.contains(&unk_id),
+                "byte-level mode should not emit unk for space-prefixed words"
+            );
+        }
     }
 
     #[test]

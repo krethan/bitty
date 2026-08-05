@@ -711,6 +711,9 @@ impl GgufWeightMapper {
                         "attn_output.weight" => {
                             crate::loader::WeightTarget::AttentionO { layer_idx }
                         }
+                        "attn_q.bias" => crate::loader::WeightTarget::AttentionQBias { layer_idx },
+                        "attn_k.bias" => crate::loader::WeightTarget::AttentionKBias { layer_idx },
+                        "attn_v.bias" => crate::loader::WeightTarget::AttentionVBias { layer_idx },
                         "ffn_gate.weight" => crate::loader::WeightTarget::FfnGate { layer_idx },
                         "ffn_down.weight" => crate::loader::WeightTarget::FfnDown { layer_idx },
                         "ffn_up.weight" => crate::loader::WeightTarget::FfnUp { layer_idx },
