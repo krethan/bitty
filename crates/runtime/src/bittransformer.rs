@@ -82,7 +82,6 @@ impl BitAttention {
         rope_cache: Option<&RoPECache>,
     ) -> Tensor {
         let seq_len = input.shape()[0];
-        let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let num_kv_heads = self.config.num_kv_heads();
         let head_dim = self.config.head_dim();
@@ -121,6 +120,7 @@ impl BitAttention {
                 seq_len,
                 kv_len,
                 slot,
+                position,
             )
         } else {
             scaled_dot_product_attention(
@@ -133,10 +133,11 @@ impl BitAttention {
                 seq_len,
                 k_reshaped.shape()[1],
                 0,
+                position,
             )
         };
 
-        let reshaped = output.reshape_owned(&[seq_len, hidden_size]);
+        let reshaped = crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
         self.o_proj.forward(&reshaped)
     }
 
@@ -151,7 +152,6 @@ impl BitAttention {
         positions: &[usize],
     ) -> Tensor {
         let batch = input.shape()[0];
-        let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let num_kv_heads = self.config.num_kv_heads();
         let head_dim = self.config.head_dim();
@@ -209,7 +209,7 @@ impl BitAttention {
             }
         };
 
-        let reshaped = output.reshape_owned(&[batch, hidden_size]);
+        let reshaped = crate::attention::sdp_batched_output_to_hidden(&output, batch, num_heads, head_dim);
         self.o_proj.forward(&reshaped)
     }
 }
@@ -422,6 +422,7 @@ fn scaled_dot_product_attention(
     seq_len: usize,
     kv_seq_len: usize,
     slot: usize,
+    position: usize,
 ) -> Tensor {
     // Cache tensors are [batch, num_kv_heads, max_seq_len, head_dim]; a bare
     // (non-cached) k/v is [num_heads, seq_len, head_dim].
@@ -451,9 +452,18 @@ fn scaled_dot_product_attention(
         for pos_q in 0..seq_len {
             let q_row = &q_ptr[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
+            // Causal mask: a query may only attend to keys at or before its own
+            // position. Cache keys are absolute; bare keys are block-relative.
+            let max_k = if batch_layout {
+                position + pos_q
+            } else {
+                pos_q
+            };
+            let attn_len = (max_k + 1).min(kv_seq_len);
+
             // Compute attention scores
-            let mut scores = Vec::with_capacity(kv_seq_len);
-            for pos_k in 0..kv_seq_len {
+            let mut scores = Vec::with_capacity(attn_len);
+            for pos_k in 0..attn_len {
                 let k_row = &k_ptr[head_base + pos_k * head_dim..][..head_dim];
                 let dot = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>();
                 scores.push(dot / scale);

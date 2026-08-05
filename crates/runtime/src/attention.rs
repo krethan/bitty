@@ -276,7 +276,6 @@ impl Attention {
         rope_cache: Option<&RoPECache>,
     ) -> Tensor {
         let batch = input.shape()[0];
-        let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let num_kv_heads = self.config.num_kv_heads();
         let head_dim = self.config.head_dim();
@@ -349,7 +348,7 @@ impl Attention {
             }
         };
 
-        let reshaped = output.reshape_owned(&[batch, hidden_size]);
+        let reshaped = sdp_batched_output_to_hidden(&output, batch, num_heads, head_dim);
         self.o_proj.forward_gpu(&reshaped, gpu)
     }
 
@@ -365,7 +364,6 @@ impl Attention {
         rope_cache: Option<&RoPECache>,
     ) -> Tensor {
         let seq_len = input.shape()[0];
-        let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let num_kv_heads = self.config.num_kv_heads();
         let head_dim = self.config.head_dim();
@@ -429,11 +427,12 @@ impl Attention {
             kv_seq_len,
             kv_start,
             slot,
+            position,
             &mut scores_buf[..kv_seq_len],
             &mut acc_buf[..head_dim],
         );
 
-        let reshaped = output.reshape_owned(&[seq_len, hidden_size]);
+        let reshaped = sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
         self.o_proj
             .forward_gpu(&reshaped, gpu)
     }
@@ -498,6 +497,7 @@ fn scaled_dot_product_attention(
     kv_seq_len: usize,
     kv_start: usize,
     slot: usize,
+    position: usize,
     scores: &mut [f32],
     acc: &mut [f32],
 ) -> Tensor {
@@ -530,9 +530,18 @@ fn scaled_dot_product_attention(
         for pos_q in 0..seq_len {
             let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
+            // Causal mask: a query may only attend to keys at or before its own
+            // position. Cache keys are absolute; bare keys are block-relative.
+            let max_k = if batch_layout {
+                position + pos_q
+            } else {
+                pos_q
+            };
+            let attn_len = window_len.min((max_k + 1).saturating_sub(kv_start));
+
             let mut max_val: f32 = f32::NEG_INFINITY;
 
-            for t in 0..window_len {
+            for t in 0..attn_len {
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
@@ -543,13 +552,13 @@ fn scaled_dot_product_attention(
                 }
             }
 
-            simd::f32_add_scalar_inplace(&mut scores[..window_len], -max_val);
-            simd::f32_exp_inplace(&mut scores[..window_len]);
-            let sum_exp: f32 = simd::f32_sum(&scores[..window_len]);
-            simd::f32_scale_inplace(&mut scores[..window_len], 1.0 / sum_exp);
+            simd::f32_add_scalar_inplace(&mut scores[..attn_len], -max_val);
+            simd::f32_exp_inplace(&mut scores[..attn_len]);
+            let sum_exp: f32 = simd::f32_sum(&scores[..attn_len]);
+            simd::f32_scale_inplace(&mut scores[..attn_len], 1.0 / sum_exp);
 
             acc[..head_dim].fill(0.0);
-            for (t, score) in scores[..window_len].iter().enumerate() {
+            for (t, score) in scores[..attn_len].iter().enumerate() {
                 let pos_k = kv_start + t;
                 let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
                 simd::f32_axpy(v_row, *score, &mut acc[..head_dim]);
@@ -574,10 +583,12 @@ pub(crate) fn scaled_dot_product_attention_owned(
     seq_len: usize,
     kv_seq_len: usize,
     kv_start: usize,
+    position: usize,
 ) -> Tensor {
     let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
     let window_len = kv_seq_len - kv_start;
+    let batch_layout = k.shape().len() == 4;
 
     let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
     let q_slice = q.as_f32_slice();
@@ -587,12 +598,28 @@ pub(crate) fn scaled_dot_product_attention_owned(
 
     for h in 0..num_heads {
         let kv_h = h / kv_groups;
-        let head_base = kv_h * kv_seq_len * head_dim;
+        let kv_stride = if batch_layout {
+            k.shape()[2]
+        } else {
+            k.shape()[1]
+        };
+        let head_base = if batch_layout {
+            (0 * num_kv_heads + kv_h) * kv_stride * head_dim
+        } else {
+            kv_h * kv_seq_len * head_dim
+        };
         for pos_q in 0..seq_len {
             let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
 
+            let max_k = if batch_layout {
+                position + pos_q
+            } else {
+                pos_q
+            };
+            let attn_len = window_len.min((max_k + 1).saturating_sub(kv_start));
+
             let mut max_val: f32 = f32::NEG_INFINITY;
-            for t in 0..window_len {
+            for t in 0..attn_len {
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
@@ -601,7 +628,7 @@ pub(crate) fn scaled_dot_product_attention_owned(
                     max_val = score;
                 }
             }
-            let mut exp_scores: Vec<f32> = (kv_start..kv_seq_len)
+            let mut exp_scores: Vec<f32> = (kv_start..kv_start + attn_len)
                 .map(|pos_k| {
                     let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                     let dot = simd::f32_dot(q_row, k_row) / scale;
@@ -617,7 +644,7 @@ pub(crate) fn scaled_dot_product_attention_owned(
             let out_row = &mut out_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
             out_row.fill(0.0);
             for (pos_k, weight) in exp_scores.iter().enumerate() {
-                let v_row = &v_slice[head_base + pos_k * head_dim..][..head_dim];
+                let v_row = &v_slice[head_base + (kv_start + pos_k) * head_dim..][..head_dim];
                 for d in 0..head_dim {
                     out_row[d] += weight * v_row[d];
                 }
@@ -710,6 +737,46 @@ pub(crate) fn scaled_dot_product_attention_batched(
     output
 }
 
+/// Permute a `[outer, inner, dim]` attention output into `[inner, outer * dim]`,
+/// interleaving so that row `i` holds every head's vector at index `i`. A plain
+/// row-major reshape of `[num_heads, seq_len, head_dim]` to `[seq_len, hidden]`
+/// would instead group whole heads, scrambling the projections for `seq_len > 1`.
+pub(crate) fn permute_outer_inner(output: &Tensor, outer: usize, inner: usize, dim: usize) -> Tensor {
+    let hidden = outer * dim;
+    let mut result = Tensor::zeros(&[inner, hidden], DType::F32);
+    let src = output.as_f32_slice();
+    let dst = result.as_f32_slice_mut();
+    for o in 0..outer {
+        for i in 0..inner {
+            let src_base = o * inner * dim + i * dim;
+            let dst_base = i * hidden + o * dim;
+            dst[dst_base..dst_base + dim].copy_from_slice(&src[src_base..src_base + dim]);
+        }
+    }
+    result
+}
+
+/// Apply [`permute_outer_inner`] to the SDPA output so it can feed `o_proj`.
+pub(crate) fn sdp_output_to_hidden(
+    output: &Tensor,
+    seq_len: usize,
+    num_heads: usize,
+    head_dim: usize,
+) -> Tensor {
+    permute_outer_inner(output, num_heads, seq_len, head_dim)
+}
+
+/// Apply [`permute_outer_inner`] to the batched decode SDPA output
+/// (`[num_heads, batch, head_dim]` -> `[batch, hidden]`).
+pub(crate) fn sdp_batched_output_to_hidden(
+    output: &Tensor,
+    batch: usize,
+    num_heads: usize,
+    head_dim: usize,
+) -> Tensor {
+    permute_outer_inner(output, num_heads, batch, head_dim)
+}
+
 pub fn apply_rotary_emb(x: &Tensor, position: usize, head_dim: usize, theta: f32) -> Tensor {
     apply_rotary_emb_with_cache(x, position, head_dim, theta, None)
 }
@@ -747,14 +814,16 @@ pub fn apply_rotary_emb_with_cache(
                     (angle.cos(), angle.sin())
                 };
 
-                let idx_even = base + 2 * i;
-                let idx_odd = base + 2 * i + 1;
+                // Non-interleaved (half-split) pairing: dim `i` is rotated with
+                // dim `i + half` (Llama/Gemma/Qwen/SmolLM convention).
+                let idx_lo = base + i;
+                let idx_hi = base + i + half;
 
-                let x_even = x_slice[idx_even];
-                let x_odd = x_slice[idx_odd];
+                let x_lo = x_slice[idx_lo];
+                let x_hi = x_slice[idx_hi];
 
-                out_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
-                out_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
+                out_slice[idx_lo] = x_lo * cos_val - x_hi * sin_val;
+                out_slice[idx_hi] = x_lo * sin_val + x_hi * cos_val;
             }
         }
     }
@@ -818,14 +887,15 @@ pub fn apply_rotary_emb_batch(
                     (angle.cos(), angle.sin())
                 };
 
-                let idx_even = base + 2 * i;
-                let idx_odd = base + 2 * i + 1;
+                // Non-interleaved (half-split) pairing (Llama/Gemma/Qwen/SmolLM).
+                let idx_lo = base + i;
+                let idx_hi = base + i + half;
 
-                let x_even = x_slice[idx_even];
-                let x_odd = x_slice[idx_odd];
+                let x_lo = x_slice[idx_lo];
+                let x_hi = x_slice[idx_hi];
 
-                x_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
-                x_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
+                x_slice[idx_lo] = x_lo * cos_val - x_hi * sin_val;
+                x_slice[idx_hi] = x_lo * sin_val + x_hi * cos_val;
             }
         }
     }
@@ -855,14 +925,15 @@ fn apply_rotary_inplace_inner(x: &mut Tensor, position: usize, head_dim: usize, 
                     (angle.cos(), angle.sin())
                 };
 
-                let idx_even = base + 2 * i;
-                let idx_odd = base + 2 * i + 1;
+                // Non-interleaved (half-split) pairing (Llama/Gemma/Qwen/SmolLM).
+                let idx_lo = base + i;
+                let idx_hi = base + i + half;
 
-                let x_even = x_slice[idx_even];
-                let x_odd = x_slice[idx_odd];
+                let x_lo = x_slice[idx_lo];
+                let x_hi = x_slice[idx_hi];
 
-                x_slice[idx_even] = x_even * cos_val - x_odd * sin_val;
-                x_slice[idx_odd] = x_even * sin_val + x_odd * cos_val;
+                x_slice[idx_lo] = x_lo * cos_val - x_hi * sin_val;
+                x_slice[idx_hi] = x_lo * sin_val + x_hi * cos_val;
             }
         }
     }

@@ -388,8 +388,43 @@ fn unreshape_for_attention(t: &Tensor, num_heads: usize, head_dim: usize) -> Ten
     out
 }
 
-/// All-to-all scaled dot-product attention (no causal mask — matches the
-/// runtime's windowed forward). Returns `(output, softmax weights)`.
+/// `[num_heads, seq, head_dim]` → `[seq, num_heads·head_dim]`, matching the
+/// runtime's `sdp_output_to_hidden`: each position row holds head blocks
+/// `[h0|h1|...]` contiguously (NOT the plain `reshape_owned` flatten).
+fn attn_heads_to_hidden(t: &Tensor, seq: usize, num_heads: usize, head_dim: usize) -> Tensor {
+    let hidden = num_heads * head_dim;
+    let mut out = Tensor::zeros(&[seq, hidden], DType::F32);
+    let src = t.as_f32_slice();
+    let dst = out.as_f32_slice_mut();
+    for h in 0..num_heads {
+        for pos in 0..seq {
+            let s = h * seq * head_dim + pos * head_dim;
+            let d = pos * hidden + h * head_dim;
+            dst[d..d + head_dim].copy_from_slice(&src[s..s + head_dim]);
+        }
+    }
+    out
+}
+
+/// Inverse of [`attn_heads_to_hidden`].
+fn hidden_to_attn_heads(t: &Tensor, seq: usize, num_heads: usize, head_dim: usize) -> Tensor {
+    let hidden = num_heads * head_dim;
+    let mut out = Tensor::zeros(&[num_heads, seq, head_dim], DType::F32);
+    let src = t.as_f32_slice();
+    let dst = out.as_f32_slice_mut();
+    for h in 0..num_heads {
+        for pos in 0..seq {
+            let s = pos * hidden + h * head_dim;
+            let d = h * seq * head_dim + pos * head_dim;
+            dst[d..d + head_dim].copy_from_slice(&src[s..s + head_dim]);
+        }
+    }
+    out
+}
+
+/// Causal all-to-all scaled dot-product attention (matches the runtime's
+/// masked SDPA: a query at position `m` attends only to keys `n <= m`).
+/// Returns `(output, softmax weights)`, with masked weights exactly zero.
 fn sdpa_forward(
     q: &Tensor,
     k: &Tensor,
@@ -412,9 +447,9 @@ fn sdpa_forward(
         let kv_h = h / kv_groups;
         for m in 0..seq {
             let q_row = &qs[h * seq * head_dim + m * head_dim..][..head_dim];
-            let mut scores = vec![0.0f32; seq];
+            let mut scores = vec![f32::NEG_INFINITY; seq];
             let mut maxv = f32::NEG_INFINITY;
-            for n in 0..seq {
+            for n in 0..=m {
                 let k_row = &ks[kv_h * seq * head_dim + n * head_dim..][..head_dim];
                 let s = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>() / scale;
                 scores[n] = s;
@@ -431,7 +466,7 @@ fn sdpa_forward(
             let out_row = &mut os[h * seq * head_dim + m * head_dim..][..head_dim];
             for d in 0..head_dim {
                 let mut acc = 0.0f32;
-                for n in 0..seq {
+                for n in 0..=m {
                     let wgt = scores[n] * inv;
                     acc += wgt * vs[kv_h * seq * head_dim + n * head_dim + d];
                 }
@@ -545,8 +580,8 @@ fn rope_backward(gy: &Tensor, position: usize, head_dim: usize, theta: f32) -> T
                 let freq = 1.0 / theta.powf((2 * i) as f32 / head_dim as f32);
                 let angle = (position + pos) as f32 * freq;
                 let (c, s) = (angle.cos(), angle.sin());
-                let e = base + 2 * i;
-                let o = base + 2 * i + 1;
+                let e = base + i;
+                let o = base + i + half;
                 let ye = ys[e];
                 let yo = ys[o];
                 xs[e] = ye * c + yo * s;
@@ -577,7 +612,6 @@ fn silu_with_sigmoid(x: &Tensor) -> (Tensor, Tensor) {
 /// Student layer forward (mirrors the deployed CPU `BitTransformerLayer`
 /// path, non-SubLN). Returns `(h_out, saved activations)`.
 fn layer_forward(p: &LayerProj, h_in: &Tensor, cfg: &ModelConfig) -> (Tensor, SavedLayer) {
-    let hidden = cfg.hidden_size;
     let num_heads = cfg.num_heads;
     let num_kv = cfg.num_kv_heads();
     let hd = cfg.head_dim();
@@ -594,11 +628,11 @@ fn layer_forward(p: &LayerProj, h_in: &Tensor, cfg: &ModelConfig) -> (Tensor, Sa
     let v_r = reshape_for_attention(&v, num_kv, hd);
 
     let (attn_heads, p_soft) = sdpa_forward(&q_r, &k_r, &v_r, num_heads, num_kv, hd, seq);
-    // The runtime feeds `o_proj` with a plain flatten of the head layout
-    // (`output.reshape_owned(&[seq, hidden])`), not a head-interleaved
-    // permutation — mirror that exactly so the graph matches the deployed
-    // model's `o_proj` input ordering.
-    let attn_in = attn_heads.reshape_owned(&[seq, hidden]);
+    // The runtime feeds `o_proj` with a per-position permutation of the head
+    // layout (`sdp_output_to_hidden`), where position `pos` holds head blocks
+    // `[h0|h1|...]` contiguously — mirror that exactly so the graph matches
+    // the deployed model's `o_proj` input ordering.
+    let attn_in = attn_heads_to_hidden(&attn_heads, seq, num_heads, hd);
     let o_out = p.o.forward(&attn_in);
 
     let h_mid = h_in.add(&o_out).unwrap();
@@ -686,8 +720,8 @@ fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &Mod
     // --- Attention branch: h_mid = h_in + o_out ---
     let g_attn_in = g_h_mid.dot(&p.o.dequant).unwrap(); // [T, H]
     acc_grad(&mut p.o.grad, g_h_mid.transpose().dot(&s.attn_in).unwrap());
-    // Inverse of the plain `reshape_owned(&[seq, hidden])` flatten.
-    let g_attn_heads = g_attn_in.reshape_owned(&[num_heads, seq, hd]);
+    // Inverse of `attn_heads_to_hidden`.
+    let g_attn_heads = hidden_to_attn_heads(&g_attn_in, seq, num_heads, hd);
     let (gq_r, gk_r, gv_r) = sdpa_backward(
         &s.q_r,
         &s.k_r,
@@ -1272,7 +1306,7 @@ mod tests {
             QATConfig::new()
                 .with_lr(0.1)
                 .with_steps(10)
-                .with_grad_clip(0.01),
+                .with_grad_clip(0.05),
         );
         let (start_clipped, end_clipped) = qat_clipped.train(&windows);
 

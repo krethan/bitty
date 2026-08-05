@@ -125,10 +125,15 @@ fn load_gguf_weights(
     device: bitllm_tensor::Device,
     config: &ModelConfig,
 ) {
-    use bitllm_runtime::gguf::GgufWeightMapper;
+    use bitllm_runtime::gguf::{to_torch_layout, uninterleave_rope_heads, GgufWeightMapper};
+
+    let mut lm_head_loaded = false;
 
     for name in loader.tensor_names() {
         let target = GgufWeightMapper::map_weight(name);
+        if matches!(target, bitllm_runtime::WeightTarget::LmHead) {
+            lm_head_loaded = true;
+        }
         let tensor = match loader.load_tensor(name) {
             Ok(t) => t,
             Err(e) => {
@@ -137,6 +142,16 @@ fn load_gguf_weights(
             }
         };
 
+        let tensor = to_torch_layout(tensor);
+        // llama.cpp stores q/k rows RoPE-half interleaved; undo it so the
+        // projections match torch (safetensors) layout.
+        let tensor = match target {
+            bitllm_runtime::WeightTarget::AttentionQ { .. }
+            | bitllm_runtime::WeightTarget::AttentionK { .. } => {
+                uninterleave_rope_heads(&tensor, config.head_dim())
+            }
+            _ => tensor,
+        };
         let tensor = if device != bitllm_tensor::Device::Cpu {
             tag_tensor_device(tensor, device)
         } else {
@@ -148,8 +163,9 @@ fn load_gguf_weights(
         }
     }
 
-    // Handle tied word embeddings
-    if config.tie_word_embeddings {
+    // Handle tied word embeddings: if the config says to tie embeddings and
+    // the model doesn't have a separate output weight, copy embedding to lm_head.
+    if config.tie_word_embeddings || !lm_head_loaded {
         model.tie_embeddings();
     }
 }

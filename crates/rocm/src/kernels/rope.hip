@@ -5,41 +5,32 @@ extern "C" __global__ void bitllm_rope(
     int num_heads, int head_dim, int seq_len,
     int position, float theta
 ) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int half_dim = head_dim / 2;
-    int total = num_heads * head_dim;
+    // One thread per (head, pair) so each thread owns both halves of its pair
+    // and reads both values before writing either (no cross-thread race).
+    int total = num_heads * half_dim;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx >= total) return;
 
-    int head = idx / head_dim;
-    int d = idx % head_dim;
-    int pair = d % half_dim;
+    int head = idx / half_dim;
+    int i = idx % half_dim;
 
-    float freq = 1.0f / powf(theta, (float)(2 * pair) / (float)head_dim);
+    float freq = 1.0f / powf(theta, (float)(2 * i) / (float)head_dim);
     float angle = (float)position * freq;
-
     float cos_val = cosf(angle);
     float sin_val = sinf(angle);
 
-    float q_val = q[head * head_dim + d];
-    float q_pair = q[head * head_dim + ((d + half_dim) % head_dim)];
+    int lo = head * head_dim + i;
+    int hi = head * head_dim + i + half_dim;
 
-    float q_out;
-    if (d < half_dim) {
-        q_out = q_val * cos_val - q_pair * sin_val;
-    } else {
-        q_out = q_val * cos_val + q_pair * sin_val;
-    }
-    q[head * head_dim + d] = q_out;
+    float q_lo = q[lo];
+    float q_hi = q[hi];
+    q[lo] = q_lo * cos_val - q_hi * sin_val;
+    q[hi] = q_lo * sin_val + q_hi * cos_val;
 
-    float k_val = k[head * head_dim + d];
-    float k_pair = k[head * head_dim + ((d + half_dim) % head_dim)];
-
-    float k_out;
-    if (d < half_dim) {
-        k_out = k_val * cos_val - k_pair * sin_val;
-    } else {
-        k_out = k_val * cos_val + k_pair * sin_val;
-    }
-    k[head * head_dim + d] = k_out;
+    float k_lo = k[lo];
+    float k_hi = k[hi];
+    k[lo] = k_lo * cos_val - k_hi * sin_val;
+    k[hi] = k_lo * sin_val + k_hi * cos_val;
 }

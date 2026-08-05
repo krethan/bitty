@@ -218,7 +218,7 @@ impl GpuOps {
         #[cfg(feature = "rocm")]
         {
             unsafe {
-                let total = num_heads * head_dim;
+                let total = num_heads * head_dim / 2;
                 let block_size = 256u32;
                 let grid_size = ((total + 255) / 256) as u32;
 

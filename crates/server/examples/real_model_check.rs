@@ -3,6 +3,7 @@
 //!
 //! Usage:
 //!   cargo run -p bitllm-server --example real_model_check -- /path/to/model/dir [--quantize ternary] [--prompt "hello"]
+//!   cargo run -p bitllm-server --example real_model_check -- --gguf /path/to/model.gguf [--tokenizer /path/to/tokenizer.json] [--quantize ternary] [--prompt "hello"]
 //!
 //! The directory must contain `config.json` and `model.safetensors`; a
 //! `tokenizer.json` is used when present (otherwise a byte fallback).
@@ -15,29 +16,52 @@ fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let mut args = std::env::args().skip(1);
-    let dir = PathBuf::from(args.next().expect("usage: real_model_check <model_dir> [--quantize ternary] [--prompt \"...\"]"));
     let mut quantize = None;
     let mut prompt = "The quick brown fox jumps over the lazy dog".to_string();
+    let mut gguf: Option<PathBuf> = None;
+    let mut tokenizer_path: Option<PathBuf> = None;
+    let mut dir: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--quantize" => quantize = args.next(),
             "--prompt" => prompt = args.next().unwrap_or(prompt),
+            "--gguf" => gguf = args.next().map(PathBuf::from),
+            "--tokenizer" => tokenizer_path = args.next().map(PathBuf::from),
+            other if dir.is_none() => dir = Some(PathBuf::from(other)),
             other => anyhow::bail!("unknown arg: {other}"),
         }
     }
 
-    let safetensors = dir.join("model.safetensors");
-    let config_json = dir.join("config.json");
-    anyhow::ensure!(safetensors.exists(), "missing {}", safetensors.display());
-    anyhow::ensure!(config_json.exists(), "missing {}", config_json.display());
-
-    let opts = ModelLoadOptions {
-        gguf: None,
-        safetensors: Some(safetensors.display().to_string()),
-        config_json: Some(config_json.display().to_string()),
-        config: "tiny".to_string(),
-        quantize: quantize.clone(),
-        device: bitllm_tensor::Device::Cpu,
+    let opts = if let Some(gguf_path) = gguf {
+        anyhow::ensure!(gguf_path.exists(), "missing {}", gguf_path.display());
+        ModelLoadOptions {
+            gguf: Some(gguf_path.display().to_string()),
+            safetensors: None,
+            config_json: None,
+            config: "tiny".to_string(),
+            quantize: quantize.clone(),
+            device: bitllm_tensor::Device::Cpu,
+        }
+    } else {
+        let dir = dir.ok_or_else(|| anyhow::anyhow!("usage: real_model_check <model_dir> or --gguf <file>"))?;
+        let safetensors = dir.join("model.safetensors");
+        let config_json = dir.join("config.json");
+        anyhow::ensure!(safetensors.exists(), "missing {}", safetensors.display());
+        anyhow::ensure!(config_json.exists(), "missing {}", config_json.display());
+        if tokenizer_path.is_none() {
+            let tok = dir.join("tokenizer.json");
+            if tok.exists() {
+                tokenizer_path = Some(tok);
+            }
+        }
+        ModelLoadOptions {
+            gguf: None,
+            safetensors: Some(safetensors.display().to_string()),
+            config_json: Some(config_json.display().to_string()),
+            config: "tiny".to_string(),
+            quantize: quantize.clone(),
+            device: bitllm_tensor::Device::Cpu,
+        }
     };
 
     let loaded = load_model(&opts)?;
@@ -73,10 +97,9 @@ fn main() -> anyhow::Result<()> {
     );
 
     // Tokenize + generate (mirrors the server worker path).
-    let tokenizer_path = dir.join("tokenizer.json");
-    let tokenizer = if tokenizer_path.exists() {
-        println!("tokenizer: {}", tokenizer_path.display());
-        bitllm_tokenizer::BpeTokenizer::load(&tokenizer_path)?
+    let tokenizer = if let Some(tok) = tokenizer_path {
+        println!("tokenizer: {}", tok.display());
+        bitllm_tokenizer::BpeTokenizer::load(&tok)?
     } else {
         println!("tokenizer: byte-level fallback (no tokenizer.json)");
         let mut vocab = std::collections::HashMap::new();

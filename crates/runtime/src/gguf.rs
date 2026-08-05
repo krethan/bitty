@@ -552,14 +552,10 @@ fn f16_to_f32(h: u16) -> f32 {
         if mantissa == 0 {
             f32::from_bits(sign << 31)
         } else {
-            let mut m = mantissa;
-            let mut e = 1u32;
-            while (m & 0x400) == 0 {
-                m <<= 1;
-                e -= 1;
-            }
-            m &= 0x3FF;
-            f32::from_bits((sign << 31) | ((e + 127 - 15) << 23) | (m << 13))
+            // Subnormal: value = sign * mantissa * 2^-24. The bit-shift
+            // normalization below underflows on the smallest subnormals.
+            let v = (mantissa as f32) * 2f32.powi(-24);
+            if sign == 1 { -v } else { v }
         }
     } else if exp == 31 {
         f32::from_bits((sign << 31) | 0x7F800000 | (mantissa << 13))
@@ -650,6 +646,46 @@ impl GgufLoader {
 }
 
 pub struct GgufWeightMapper;
+
+/// GGUF stores tensor dims in ggml `ne` order, which is the reverse of the
+/// logical (torch) shape. The tensor DATA is laid out in torch row-major order
+/// (the ggml `ne[0]` axis varies fastest, which matches a torch `[out, in]`
+/// matrix's fastest axis), so converting to our `[out, in]` convention only
+/// requires reversing the declared shape — no data movement. Rank-1 tensors
+/// (norms, biases) are unchanged.
+pub fn to_torch_layout(t: Tensor) -> Tensor {
+    let mut shape = t.shape().to_vec();
+    shape.reverse();
+    t.reshape(&shape)
+}
+
+/// Undo llama.cpp's RoPE-half interleaving of attention q/k weights.
+///
+/// For non-interleaved-RoPE models (Llama/Gemma/SmolLM/Qwen) the GGUF converter
+/// stores `attn_q`/`attn_k` with the `head_dim` output axis permuted from torch
+/// order `[d0..d63]` into `[d0, d32, d1, d33, ...]` — i.e. the two RoPE halves
+/// alternate. `attn_v`/`attn_output` and all FFN matrices are stored in plain
+/// torch order, so only q/k need this transform.
+///
+/// The tensor is `[out, in]` with `out == n_heads * head_dim`. For a torch
+/// output row `r = h*head_dim + d` (`h` head, `d` dimension), the GGUF row is
+/// `h*head_dim + 2*(d % (head_dim/2)) + (d / (head_dim/2))`. This returns a new
+/// tensor with rows reordered to torch layout.
+pub fn uninterleave_rope_heads(t: &Tensor, head_dim: usize) -> Tensor {
+    let shape = t.shape();
+    let out = shape[0];
+    let inner = shape[1..].iter().product::<usize>().max(1);
+    let half = head_dim / 2;
+    let src = t.as_f32_slice();
+    let mut dst = vec![0.0f32; out * inner];
+    for r in 0..out {
+        let d_lo = r % half;
+        let d_hi = (r / half) % 2;
+        let r_g = head_dim * (r / head_dim) + 2 * d_lo + d_hi;
+        dst[r * inner..(r + 1) * inner].copy_from_slice(&src[r_g * inner..(r_g + 1) * inner]);
+    }
+    Tensor::from_slice(&dst, shape)
+}
 
 impl GgufWeightMapper {
     pub fn map_weight(name: &str) -> crate::loader::WeightTarget {
@@ -892,6 +928,44 @@ mod tests {
         let mut data = vec![0u8; 64];
         data[0..4].copy_from_slice(b"FAIL");
         assert!(GgufLoader::load_from_bytes(&data).is_err());
+    }
+
+    #[test]
+    fn test_to_torch_layout() {
+        // GGUF declares dims in ggml ne order (reversed vs torch) but stores
+        // tensor data in torch row-major order. Converting to our [out, in]
+        // convention reverses the shape without moving data: a declared
+        // [2, 3] tensor holding torch row-major data [1..6] is a [3, 2] torch
+        // matrix with rows [1,2], [3,4], [5,6].
+        let gguf_layout = Tensor::from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
+        let torch_layout = to_torch_layout(gguf_layout);
+        assert_eq!(torch_layout.shape(), &[3, 2]);
+        assert_eq!(torch_layout.as_f32_slice(), &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+        // Rank-1 tensors (norms/biases) are untouched.
+        let norm = Tensor::from_slice(&[1.0, 2.0, 3.0], &[3]);
+        assert_eq!(to_torch_layout(norm.clone()).shape(), &[3]);
+        assert_eq!(to_torch_layout(norm).as_f32_slice(), &[1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_uninterleave_rope_heads() {
+        // head_dim = 4, n_heads = 2, in = 3. GGUF interleaves the RoPE halves:
+        // torch row (h, d0) -> gguf (h, 2*d0), torch (h, d0 + hd/2) -> gguf (h, 2*d0 + 1).
+        let hd = 4usize;
+        let n = 8usize;
+        let data: Vec<f32> = (0..n * 3).map(|i| i as f32).collect();
+        let torch = Tensor::from_slice(&data, &[8, 3]);
+        let mut gg_data = vec![0.0f32; n * 3];
+        for r in 0..n {
+            let d_lo = r % (hd / 2);
+            let d_hi = (r / (hd / 2)) % 2;
+            let r_g = hd * (r / hd) + 2 * d_lo + d_hi;
+            gg_data[r_g * 3..(r_g + 1) * 3].copy_from_slice(&data[r * 3..(r + 1) * 3]);
+        }
+        let gg = Tensor::from_slice(&gg_data, &[8, 3]);
+        let restored = uninterleave_rope_heads(&gg, hd);
+        assert_eq!(restored.as_f32_slice(), &data);
     }
 
     #[test]

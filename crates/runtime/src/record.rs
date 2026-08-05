@@ -85,7 +85,6 @@ impl Attention {
         recorder: &mut ProjectionRecorder,
     ) -> Tensor {
         let seq_len = input.shape()[0];
-        let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let num_kv_heads = self.config.num_kv_heads();
         let head_dim = self.config.head_dim();
@@ -156,9 +155,10 @@ impl Attention {
             seq_len,
             kv_seq_len,
             kv_start,
+            position,
         );
 
-        let reshaped = output.reshape_owned(&[seq_len, hidden_size]);
+        let reshaped = crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
         let o = self.o_proj.forward(&reshaped);
         recorder.push(ProjectionSample {
             layer: layer_idx,
