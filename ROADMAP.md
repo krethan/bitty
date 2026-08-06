@@ -31,6 +31,6 @@
 ## Next Steps
 
 - [x] Verify Gemma2/Phi with real checkpoints (0-skip + finite-logit regression tests)
-- [ ] Add QAT activation recorder validation for Qwen
+- [x] Add QAT activation recorder validation for Qwen
 - [x] Add a GGUF-vs-safetensors weight-equivalence unit test to prevent q/k layout regressions
 - [ ] GPU backend testing

@@ -139,6 +139,7 @@ impl TransformerLayer {
         cache: Option<&mut KvCache>,
         layer_idx: usize,
         position: usize,
+        rope_cache: Option<&RoPECache>,
         recorder: &mut crate::record::ProjectionRecorder,
     ) -> Tensor {
         use crate::record::ProjectionKind;
@@ -146,7 +147,7 @@ impl TransformerLayer {
         let normed = self.attn_norm.forward(input);
         let attn_out = self
             .attention
-            .forward_record(&normed, cache, layer_idx, position, recorder);
+            .forward_record(&normed, cache, layer_idx, position, rope_cache, recorder);
 
         let mut h = input.clone();
         h.add_assign(&attn_out).unwrap();
@@ -436,7 +437,14 @@ impl Model {
         let mut hidden = self.embedding.forward(token_ids);
         self.add_position_embedding_inplace(&mut hidden, pos);
         for (i, layer) in self.layers.iter().enumerate() {
-            hidden = layer.forward_record(&hidden, self.cache.as_mut(), i, pos, recorder);
+            hidden = layer.forward_record(
+                &hidden,
+                self.cache.as_mut(),
+                i,
+                pos,
+                self.rope_cache.as_ref(),
+                recorder,
+            );
         }
         self.norm.forward(&hidden)
     }

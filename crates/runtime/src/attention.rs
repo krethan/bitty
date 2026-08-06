@@ -595,6 +595,9 @@ fn scale_softcap(score: f32, softcap: f32) -> f32 {
 
 /// Reused by the QAT activation recorder (`crate::record`) which needs the
 /// bare (non-batched) attention output without owning private buffers.
+///
+/// Delegates to the scratch-buffer [`scaled_dot_product_attention`] used by
+/// inference so recorded activations are bit-identical to the teacher's.
 pub(crate) fn scaled_dot_product_attention_owned(
     q: &Tensor,
     k: &Tensor,
@@ -609,73 +612,25 @@ pub(crate) fn scaled_dot_product_attention_owned(
     attn_scale: f32,
     softcap: f32,
 ) -> Tensor {
-    let kv_groups = num_heads / num_kv_heads;
-    let window_len = kv_seq_len - kv_start;
-    let batch_layout = k.shape().len() == 4;
-
-    let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
-    let q_slice = q.as_f32_slice();
-    let k_slice = k.as_f32_slice();
-    let v_slice = v.as_f32_slice();
-    let out_slice = output.as_f32_slice_mut();
-
-    for h in 0..num_heads {
-        let kv_h = h / kv_groups;
-        let kv_stride = if batch_layout {
-            k.shape()[2]
-        } else {
-            k.shape()[1]
-        };
-        let head_base = if batch_layout {
-            kv_h * kv_stride * head_dim
-        } else {
-            kv_h * kv_seq_len * head_dim
-        };
-        for pos_q in 0..seq_len {
-            let q_row = &q_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
-
-            let max_k = if batch_layout {
-                position + pos_q
-            } else {
-                pos_q
-            };
-            let attn_len = window_len.min((max_k + 1).saturating_sub(kv_start));
-
-            let mut max_val: f32 = f32::NEG_INFINITY;
-            for t in 0..attn_len {
-                let pos_k = kv_start + t;
-                let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
-                let dot = simd::f32_dot(q_row, k_row);
-                let score = scale_softcap(dot * attn_scale, softcap);
-                if score > max_val {
-                    max_val = score;
-                }
-            }
-            let mut exp_scores: Vec<f32> = (kv_start..kv_start + attn_len)
-                .map(|pos_k| {
-                    let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
-                    let dot = simd::f32_dot(q_row, k_row) * attn_scale;
-                    (scale_softcap(dot, softcap) - max_val).exp()
-                })
-                .collect();
-            let sum_exp: f32 = exp_scores.iter().sum();
-            let inv_sum = 1.0 / sum_exp;
-            for s in exp_scores.iter_mut() {
-                *s *= inv_sum;
-            }
-
-            let out_row = &mut out_slice[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
-            out_row.fill(0.0);
-            for (pos_k, weight) in exp_scores.iter().enumerate() {
-                let v_row = &v_slice[head_base + (kv_start + pos_k) * head_dim..][..head_dim];
-                for d in 0..head_dim {
-                    out_row[d] += weight * v_row[d];
-                }
-            }
-        }
-    }
-
-    output
+    let mut scores = vec![0.0f32; kv_seq_len];
+    let mut acc = vec![0.0f32; head_dim];
+    scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        seq_len,
+        kv_seq_len,
+        kv_start,
+        0,
+        position,
+        &mut scores,
+        &mut acc,
+        attn_scale,
+        softcap,
+    )
 }
 
 /// Batched decode SDPA. `q` is `[num_heads, batch, head_dim]`. `k`/`v` are

@@ -82,6 +82,7 @@ impl Attention {
         mut cache: Option<&mut crate::attention::KvCache>,
         layer_idx: usize,
         position: usize,
+        rope_cache: Option<&crate::attention::RoPECache>,
         recorder: &mut ProjectionRecorder,
     ) -> Tensor {
         let seq_len = input.shape()[0];
@@ -130,7 +131,7 @@ impl Attention {
                 position,
                 head_dim,
                 self.config.rope_theta,
-                None,
+                rope_cache,
             );
         }
 
@@ -231,6 +232,175 @@ mod tests {
         // Target rows must equal the projection's FP32 output on the input.
         for sample in &recorder.samples {
             assert_eq!(sample.input.shape()[0], sample.target.shape()[0]);
+        }
+    }
+
+    /// Qwen2-shaped config: GQA (4 heads, 2 KV heads), explicit `head_dim`,
+    /// sliding window, silu-gated FFN, q/k/v biases.
+    fn qwen_config() -> ModelConfig {
+        ModelConfig {
+            vocab_size: 512,
+            hidden_size: 64,
+            num_layers: 2,
+            num_heads: 4,
+            num_kv_heads: Some(2),
+            intermediate_size: 128,
+            norm_eps: 1e-6,
+            max_seq_len: 128,
+            rope_theta: 1000000.0,
+            tie_word_embeddings: true,
+            sub_ln: false,
+            rope_scaling: None,
+            architecture: crate::config::Architecture::Qwen2,
+            activation: crate::config::Activation::SiluGated,
+            norm_type: crate::config::NormType::RmsNorm,
+            use_rope: true,
+            position_embeddings: None,
+            qk_norm: false,
+            sliding_window: Some(8),
+            head_dim: Some(8),
+            post_ffn_norm: false,
+            one_centered_norm: false,
+            attn_logit_softcap: None,
+            final_logit_softcap: None,
+            query_pre_attn_scalar: None,
+        }
+    }
+
+    fn randomize_qwen_layers(model: &mut Model, config: &ModelConfig) {
+        let hidden = config.hidden_size;
+        let kv_hidden = config.num_kv_heads() * config.head_dim();
+        let head_dim = config.head_dim();
+        let num_heads = config.num_heads;
+        for layer in &mut model.layers {
+            layer.attention.q_proj.weight =
+                Tensor::random(&[num_heads * head_dim, hidden], bitllm_tensor::DType::F32);
+            layer.attention.k_proj.weight =
+                Tensor::random(&[kv_hidden, hidden], bitllm_tensor::DType::F32);
+            layer.attention.v_proj.weight =
+                Tensor::random(&[kv_hidden, hidden], bitllm_tensor::DType::F32);
+            layer.attention.o_proj.weight =
+                Tensor::random(&[hidden, num_heads * head_dim], bitllm_tensor::DType::F32);
+            layer.attention.q_proj.bias =
+                Some(Tensor::random(&[num_heads * head_dim], bitllm_tensor::DType::F32));
+            layer.attention.k_proj.bias =
+                Some(Tensor::random(&[kv_hidden], bitllm_tensor::DType::F32));
+            layer.attention.v_proj.bias =
+                Some(Tensor::random(&[kv_hidden], bitllm_tensor::DType::F32));
+            layer.ffn_up.weight = Tensor::random(
+                &[config.intermediate_size, hidden],
+                bitllm_tensor::DType::F32,
+            );
+            layer.ffn_gate.weight = Tensor::random(
+                &[config.intermediate_size, hidden],
+                bitllm_tensor::DType::F32,
+            );
+            layer.ffn_down.weight = Tensor::random(
+                &[hidden, config.intermediate_size],
+                bitllm_tensor::DType::F32,
+            );
+        }
+    }
+
+    #[test]
+    fn recording_forward_matches_normal_forward_qwen() {
+        let config = qwen_config();
+        assert_eq!(config.head_dim(), 8);
+        assert_eq!(config.num_kv_heads(), 2, "GQA: KV heads < attention heads");
+        assert_eq!(config.sliding_window, Some(8));
+
+        let mut model = Model::new(config.clone());
+        randomize_qwen_layers(&mut model, &config);
+
+        let tokens: Vec<u32> = (0..16).map(|i| i * 13 % config.vocab_size as u32).collect();
+
+        model.clear_cache();
+        let normal = model.forward_hidden(&tokens, 0, None);
+
+        model.clear_cache();
+        let mut recorder = ProjectionRecorder::new(64);
+        let recorded = model.forward_record(&tokens, &mut recorder);
+
+        assert_eq!(normal.shape(), recorded.shape());
+        for i in 0..normal.num_elements() {
+            assert!(
+                (normal.get_flat_f32(i) - recorded.get_flat_f32(i)).abs() < 1e-4,
+                "i={}: normal {} recorded {}",
+                i,
+                normal.get_flat_f32(i),
+                recorded.get_flat_f32(i)
+            );
+        }
+
+        for kind in [
+            ProjectionKind::Q,
+            ProjectionKind::K,
+            ProjectionKind::V,
+            ProjectionKind::O,
+            ProjectionKind::Up,
+            ProjectionKind::Gate,
+            ProjectionKind::Down,
+        ] {
+            assert!(
+                recorder.samples.iter().any(|s| s.kind == kind),
+                "no samples for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recording_matches_normal_forward_on_real_qwen_checkpoint() {
+        let dir = "/tmp/opencode/models/qwen25";
+        if !std::path::Path::new(dir).join("model.safetensors").exists() {
+            eprintln!("skipping: {} not present", dir);
+            return;
+        }
+        let json = std::fs::read_to_string(format!("{}/config.json", dir)).unwrap();
+        let config = ModelConfig::from_huggingface_json(&json).unwrap();
+        assert_eq!(config.architecture, crate::config::Architecture::Qwen2);
+        assert_eq!(config.num_heads, 14);
+        assert_eq!(config.num_kv_heads(), 2);
+
+        let loader = crate::loader::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+            .unwrap();
+        let mut model = Model::new(config.clone());
+        let stats = crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
+        assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);
+
+        let tokens: Vec<u32> = vec![3, 4, 5, 6, 7, 8, 9, 10];
+
+        model.clear_cache();
+        let normal = model.forward_hidden(&tokens, 0, None);
+
+        model.clear_cache();
+        let mut recorder = ProjectionRecorder::new(1024);
+        let recorded = model.forward_record(&tokens, &mut recorder);
+
+        assert_eq!(normal.shape(), recorded.shape());
+        for i in 0..normal.num_elements() {
+            let diff = (normal.get_flat_f32(i) - recorded.get_flat_f32(i)).abs();
+            assert!(
+                diff < 1e-4,
+                "i={}: normal {} recorded {}",
+                i,
+                normal.get_flat_f32(i),
+                recorded.get_flat_f32(i)
+            );
+        }
+
+        for kind in [
+            ProjectionKind::Q,
+            ProjectionKind::K,
+            ProjectionKind::V,
+            ProjectionKind::O,
+            ProjectionKind::Up,
+            ProjectionKind::Gate,
+            ProjectionKind::Down,
+        ] {
+            assert!(
+                recorder.samples.iter().any(|s| s.kind == kind),
+                "no samples for {kind:?}"
+            );
         }
     }
 }

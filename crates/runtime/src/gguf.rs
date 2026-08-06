@@ -972,7 +972,6 @@ mod tests {
         let hd = 4usize;
         let n = 8usize;
         let data: Vec<f32> = (0..n * 3).map(|i| i as f32).collect();
-        let torch = Tensor::from_slice(&data, &[8, 3]);
         let mut gg_data = vec![0.0f32; n * 3];
         for r in 0..n {
             let d_lo = r % (hd / 2);
