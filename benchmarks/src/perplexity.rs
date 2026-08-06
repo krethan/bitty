@@ -150,6 +150,11 @@ pub(crate) fn synthetic_config() -> bitllm_runtime::ModelConfig {
         qk_norm: false,
         sliding_window: None,
         head_dim: None,
+        post_ffn_norm: false,
+        one_centered_norm: false,
+        attn_logit_softcap: None,
+        final_logit_softcap: None,
+        query_pre_attn_scalar: None,
     }
 }
 

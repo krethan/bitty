@@ -328,6 +328,8 @@ impl Attention {
                     window,
                     &mut scores_buf[..max_seq_len],
                     &mut acc_buf[..head_dim],
+                    self.config.attn_logit_scale(),
+                    self.config.attn_logit_softcap(),
                 )
             }
             None => {
@@ -344,6 +346,8 @@ impl Attention {
                     window,
                     &mut scores_buf[..max_seq_len],
                     &mut acc_buf[..head_dim],
+                    self.config.attn_logit_scale(),
+                    self.config.attn_logit_softcap(),
                 )
             }
         };
@@ -430,6 +434,8 @@ impl Attention {
             position,
             &mut scores_buf[..kv_seq_len],
             &mut acc_buf[..head_dim],
+            self.config.attn_logit_scale(),
+            self.config.attn_logit_softcap(),
         );
 
         let reshaped = sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
@@ -478,8 +484,13 @@ pub(crate) fn apply_qk_norm(x: &mut Tensor, norm: &crate::layers::RmsNorm, num_h
             }
             let inv_rms = 1.0 / ((sum_sq / head_dim as f64) as f32 + eps).sqrt();
             let w_row = &w[h * head_dim..(h + 1) * head_dim];
+            let gain = if norm.one_centered {
+                |w: f32| 1.0 + w
+            } else {
+                |w: f32| w
+            };
             for j in 0..head_dim {
-                x.as_f32_slice_mut()[base + j] = row[j] * inv_rms * w_row[j];
+                x.as_f32_slice_mut()[base + j] = row[j] * inv_rms * gain(w_row[j]);
             }
         }
     }
@@ -500,6 +511,8 @@ fn scaled_dot_product_attention(
     position: usize,
     scores: &mut [f32],
     acc: &mut [f32],
+    attn_scale: f32,
+    softcap: f32,
 ) -> Tensor {
     // Cache tensors are [batch, num_kv_heads, max_seq_len, head_dim]; a bare
     // (non-cached) k/v is [num_heads, seq_len, head_dim].
@@ -509,7 +522,6 @@ fn scaled_dot_product_attention(
     } else {
         k.shape()[1]
     };
-    let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
     let window_len = kv_seq_len - kv_start;
 
@@ -545,7 +557,7 @@ fn scaled_dot_product_attention(
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
-                let score = dot / scale;
+                let score = scale_softcap(dot * attn_scale, softcap);
                 scores[t] = score;
                 if score > max_val {
                     max_val = score;
@@ -571,6 +583,16 @@ fn scaled_dot_product_attention(
     output
 }
 
+/// Apply logit soft-capping `cap * tanh(score / cap)` when `softcap > 0`.
+#[inline]
+fn scale_softcap(score: f32, softcap: f32) -> f32 {
+    if softcap > 0.0 {
+        softcap * (score / softcap).tanh()
+    } else {
+        score
+    }
+}
+
 /// Reused by the QAT activation recorder (`crate::record`) which needs the
 /// bare (non-batched) attention output without owning private buffers.
 pub(crate) fn scaled_dot_product_attention_owned(
@@ -584,8 +606,9 @@ pub(crate) fn scaled_dot_product_attention_owned(
     kv_seq_len: usize,
     kv_start: usize,
     position: usize,
+    attn_scale: f32,
+    softcap: f32,
 ) -> Tensor {
-    let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
     let window_len = kv_seq_len - kv_start;
     let batch_layout = k.shape().len() == 4;
@@ -604,7 +627,7 @@ pub(crate) fn scaled_dot_product_attention_owned(
             k.shape()[1]
         };
         let head_base = if batch_layout {
-            (0 * num_kv_heads + kv_h) * kv_stride * head_dim
+            kv_h * kv_stride * head_dim
         } else {
             kv_h * kv_seq_len * head_dim
         };
@@ -623,7 +646,7 @@ pub(crate) fn scaled_dot_product_attention_owned(
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
-                let score = dot / scale;
+                let score = scale_softcap(dot * attn_scale, softcap);
                 if score > max_val {
                     max_val = score;
                 }
@@ -631,8 +654,8 @@ pub(crate) fn scaled_dot_product_attention_owned(
             let mut exp_scores: Vec<f32> = (kv_start..kv_start + attn_len)
                 .map(|pos_k| {
                     let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
-                    let dot = simd::f32_dot(q_row, k_row) / scale;
-                    (dot - max_val).exp()
+                    let dot = simd::f32_dot(q_row, k_row) * attn_scale;
+                    (scale_softcap(dot, softcap) - max_val).exp()
                 })
                 .collect();
             let sum_exp: f32 = exp_scores.iter().sum();
@@ -672,6 +695,8 @@ pub(crate) fn scaled_dot_product_attention_batched(
     window: Option<usize>,
     scores: &mut [f32],
     acc: &mut [f32],
+    attn_scale: f32,
+    softcap: f32,
 ) -> Tensor {
     let cache_layout = k.shape().len() == 4;
     let kv_stride = if cache_layout {
@@ -679,7 +704,6 @@ pub(crate) fn scaled_dot_product_attention_batched(
     } else {
         k.shape()[1]
     };
-    let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
 
     let mut output = Tensor::zeros(&[num_heads, batch, head_dim], DType::F32);
@@ -711,7 +735,7 @@ pub(crate) fn scaled_dot_product_attention_batched(
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
-                let score = dot / scale;
+                let score = scale_softcap(dot * attn_scale, softcap);
                 scores[t] = score;
                 if score > max_val {
                     max_val = score;
@@ -1063,6 +1087,37 @@ mod tests {
                 q.get_flat_f32(i)
             );
         }
+    }
+
+    #[test]
+    fn test_attention_softcap_bounds_logits() {
+        let num_heads = 1;
+        let num_kv_heads = 1;
+        let head_dim = 2;
+
+        let q = Tensor::from_slice(&[1.0, 1.0], &[num_heads, 1, head_dim]);
+        let k = Tensor::from_slice(&[1.0, 1.0, 2.0, 2.0], &[1, num_kv_heads, 2, head_dim]);
+        let v = Tensor::from_slice(&[10.0, 20.0, 30.0, 40.0], &[1, num_kv_heads, 2, head_dim]);
+
+        let no_cap = super::scaled_dot_product_attention_owned(
+            &q, &k, &v, num_heads, num_kv_heads, head_dim, 1, 2, 0, 1, 1.0, 0.0,
+        );
+        let capped = super::scaled_dot_product_attention_owned(
+            &q, &k, &v, num_heads, num_kv_heads, head_dim, 1, 2, 0, 1, 1.0, 1.0,
+        );
+
+        let no = no_cap.as_f32_slice();
+        let cap = capped.as_f32_slice();
+        assert!(
+            no[1] > 35.0,
+            "uncapped attention is dominated by the high-dot key (got {})",
+            no[1]
+        );
+        assert!(
+            cap[1] < 32.0,
+            "softcap=1.0 flattens the distribution toward uniform (got {})",
+            cap[1]
+        );
     }
 
     #[test]

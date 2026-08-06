@@ -690,7 +690,6 @@ impl From<i32> for SentencePieceType {
 #[derive(Debug, Clone)]
 struct SentencePiecePiece {
     piece: String,
-    score: f32,
     piece_type: SentencePieceType,
 }
 
@@ -778,7 +777,6 @@ fn parse_sentencepiece_proto(data: &[u8]) -> Result<Vec<SentencePiecePiece>, Tok
 
 fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
     let mut piece = String::new();
-    let mut score = 0.0f32;
     let mut piece_type = SentencePieceType::Normal;
     let mut pos = 0;
 
@@ -801,12 +799,11 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
                 piece = String::from_utf8_lossy(&data[pos..pos + len]).to_string();
                 pos += len;
             }
-            // score (float, field 2)
+            // score (float, field 2) — parsed and skipped; unused
             (2, 5) => {
                 if pos + 4 > data.len() {
                     return Err(TokenizerError::ProtobufError("truncated score".into()));
                 }
-                score = f32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
                 pos += 4;
             }
             // type (enum/int32, field 3)
@@ -852,7 +849,6 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
 
     Ok(SentencePiecePiece {
         piece,
-        score,
         piece_type,
     })
 }

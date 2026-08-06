@@ -156,6 +156,8 @@ impl Attention {
             kv_seq_len,
             kv_start,
             position,
+            self.config.attn_logit_scale(),
+            self.config.attn_logit_softcap(),
         );
 
         let reshaped = crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);

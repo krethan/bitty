@@ -14,6 +14,9 @@ pub struct TransformerLayer {
     pub ffn_gate: Linear,
     pub ffn_down: Linear,
     pub ffn_norm: RmsNorm,
+    /// Gemma-2 post-feedforward RMSNorm, applied to the MLP output before the
+    /// residual add.
+    pub post_ffn_norm: Option<RmsNorm>,
     pub config: ModelConfig,
 }
 
@@ -61,6 +64,7 @@ impl TransformerLayer {
                 &self.ffn_down,
                 gpu,
             );
+            let ffn_out = self.post_ffn(ffn_out, gpu);
             return ctx.add(&h, &ffn_out).unwrap_or_else(|e| {
                 log::warn!("GPU add failed, falling back to CPU: {}", e);
                 let mut h2 = h;
@@ -81,9 +85,17 @@ impl TransformerLayer {
             &self.ffn_down,
             gpu,
         );
+        let ffn_out = self.post_ffn(ffn_out, gpu);
         h.add_assign(&ffn_out).unwrap();
         h
+    }
 
+    /// Apply the Gemma-2 post-feedforward norm (if present) to the MLP output.
+    fn post_ffn(&self, ffn_out: Tensor, gpu: Option<&GpuContext>) -> Tensor {
+        match &self.post_ffn_norm {
+            Some(n) => n.forward_gpu(&ffn_out, gpu),
+            None => ffn_out,
+        }
     }
 
     /// Batched decode layer forward: `input` is `[batch, hidden_size]` with one
@@ -113,6 +125,7 @@ impl TransformerLayer {
             &self.ffn_down,
             gpu,
         );
+        let ffn_out = self.post_ffn(ffn_out, gpu);
         h.add_assign(&ffn_out).unwrap();
         h
     }
@@ -139,7 +152,7 @@ impl TransformerLayer {
         h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward(&h);
         let (activated, up, gate) = ffn_record_activations(&self.config, &normed2, &self.ffn_up, &self.ffn_gate);
-        let ffn_out = self.ffn_down.forward(&activated);
+        let mut ffn_out = self.ffn_down.forward(&activated);
 
         let mut samples = vec![
             (ProjectionKind::Up, &normed2, &up),
@@ -157,6 +170,9 @@ impl TransformerLayer {
             });
         }
 
+        if let Some(post) = &self.post_ffn_norm {
+            ffn_out = post.forward(&ffn_out);
+        }
         h.add_assign(&ffn_out).unwrap();
         h
     }
@@ -380,7 +396,20 @@ impl Model {
     /// cache must have been sized for at least `slot + 1` batch entries.
     pub fn forward_slot(&mut self, token_ids: &[u32], slot: usize, gpu: Option<&GpuContext>) -> Tensor {
         let normed = self.forward_normed(token_ids, slot, gpu);
-        self.lm_head.forward_gpu(&normed, gpu)
+        let mut logits = self.lm_head.forward_gpu(&normed, gpu);
+        self.apply_final_softcap(&mut logits);
+        logits
+    }
+
+    /// Gemma-2 final logit soft-capping: `cap * tanh(logit / cap)`.
+    fn apply_final_softcap(&self, logits: &mut Tensor) {
+        let cap = self.config.final_logit_softcap();
+        if cap <= 0.0 {
+            return;
+        }
+        for s in logits.as_f32_slice_mut().iter_mut() {
+            *s = cap * (*s / cap).tanh();
+        }
     }
 
     /// Like `forward_slot`, but returns the post-RMSNorm hidden states (the
@@ -516,7 +545,9 @@ impl Model {
             }
 
             let normed = self.norm.forward_gpu(&hidden, gpu);
-            return self.lm_head.forward_gpu(&normed, gpu);
+            let mut logits = self.lm_head.forward_gpu(&normed, gpu);
+            self.apply_final_softcap(&mut logits);
+            return logits;
         }
 
         if let Some(ref bit_layers) = self.bit_layers {
@@ -537,7 +568,9 @@ impl Model {
         }
 
         let normed = self.norm.forward_gpu(&hidden, gpu);
-        self.lm_head.forward_gpu(&normed, gpu)
+        let mut logits = self.lm_head.forward_gpu(&normed, gpu);
+        self.apply_final_softcap(&mut logits);
+        logits
     }
 
     /// Prefill a batch of prompts into their respective cache slots.
@@ -776,10 +809,7 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
     let head_dim = config.head_dim();
 
     let qk_norm = if config.qk_norm {
-        Some(crate::layers::RmsNorm::new(
-            Tensor::ones(&[config.num_heads, head_dim], DType::F32),
-            config.norm_eps,
-        ))
+        Some(make_norm_shape(&[config.num_heads, head_dim], config))
     } else {
         None
     };
@@ -814,20 +844,31 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
             None,
         ),
         ffn_norm: make_norm(config),
+        post_ffn_norm: if config.post_ffn_norm {
+            Some(make_norm(config))
+        } else {
+            None
+        },
         config: config.clone(),
     }
 }
 
 /// Build the pre-attention / pre-FFN norm for a config: RMSNorm or LayerNorm.
 fn make_norm(config: &ModelConfig) -> RmsNorm {
+    make_norm_shape(&[config.hidden_size], config)
+}
+
+fn make_norm_shape(shape: &[usize], config: &ModelConfig) -> RmsNorm {
     if config.uses_layer_norm() {
         RmsNorm::new_layer(
-            Tensor::ones(&[config.hidden_size], DType::F32),
-            Some(Tensor::zeros(&[config.hidden_size], DType::F32)),
+            Tensor::ones(shape, DType::F32),
+            Some(Tensor::zeros(shape, DType::F32)),
             config.norm_eps,
         )
+    } else if config.one_centered_norm {
+        RmsNorm::new_one_centered(Tensor::ones(shape, DType::F32), config.norm_eps)
     } else {
-        RmsNorm::new(Tensor::ones(&[config.hidden_size], DType::F32), config.norm_eps)
+        RmsNorm::new(Tensor::ones(shape, DType::F32), config.norm_eps)
     }
 }
 

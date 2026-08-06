@@ -350,6 +350,9 @@ impl LlamaWeightMapper {
         if name == "output" || name == "lm_head.weight" {
             return WeightTarget::LmHead;
         }
+        if name == "output.bias" || name == "lm_head.bias" {
+            return WeightTarget::LmHeadBias;
+        }
 
         // Try to parse as a per-layer weight.
         // Supports:
@@ -409,6 +412,9 @@ impl LlamaWeightMapper {
                 | "pre_feedforward_layernorm.weight" => {
                     WeightTarget::FfnNorm { layer_idx }
                 }
+                "post_feedforward_layernorm.weight" | "ffn_post_norm.weight" => {
+                    WeightTarget::PostFfnNorm { layer_idx }
+                }
                 _ => WeightTarget::Unknown(name.to_string()),
             };
         }
@@ -461,6 +467,7 @@ pub enum WeightTarget {
     FinalNorm,
     FinalNormBias,
     LmHead,
+    LmHeadBias,
     AttentionQ { layer_idx: usize },
     AttentionK { layer_idx: usize },
     AttentionV { layer_idx: usize },
@@ -486,6 +493,8 @@ pub enum WeightTarget {
     AttnNormBias { layer_idx: usize },
     FfnNorm { layer_idx: usize },
     FfnNormBias { layer_idx: usize },
+    /// Gemma-2 post-feedforward RMSNorm weight.
+    PostFfnNorm { layer_idx: usize },
     Unknown(String),
 }
 
@@ -554,6 +563,9 @@ impl WeightMapper for Gpt2WeightMapper {
         }
         if name == "lm_head.weight" {
             return WeightTarget::LmHead;
+        }
+        if name == "lm_head.bias" {
+            return WeightTarget::LmHeadBias;
         }
 
         let layer_idx = Self::parse_gpt2_layer_index(name);
@@ -643,6 +655,9 @@ impl WeightMapper for PhiWeightMapper {
         }
         if name == "lm_head.weight" || name == "model.lm_head.weight" {
             return WeightTarget::LmHead;
+        }
+        if name == "lm_head.bias" || name == "model.lm_head.bias" {
+            return WeightTarget::LmHeadBias;
         }
 
         let layer_idx = Self::parse_phi_layer_index(name);
@@ -831,6 +846,9 @@ pub fn apply_weight_target(
         WeightTarget::LmHead => {
             model.lm_head.weight = tensor;
         }
+        WeightTarget::LmHeadBias => {
+            model.lm_head.bias = Some(tensor);
+        }
         WeightTarget::AttentionQ { layer_idx } => {
             let l = layer_weight!(*layer_idx);
             l.attention.q_proj.weight = tensor;
@@ -962,6 +980,18 @@ pub fn apply_weight_target(
         WeightTarget::FfnNormBias { layer_idx } => {
             let l = layer_weight!(*layer_idx);
             l.ffn_norm.bias = Some(tensor);
+        }
+        WeightTarget::PostFfnNorm { layer_idx } => {
+            let l = layer_weight!(*layer_idx);
+            if let Some(post) = &mut l.post_ffn_norm {
+                post.weight = tensor;
+            } else {
+                log::warn!(
+                    "Post-FFN norm weight received but layer {} has no post_ffn_norm slot",
+                    layer_idx
+                );
+                return false;
+            }
         }
         WeightTarget::Unknown(unknown_name) => {
             log::debug!("Skipping unknown tensor: {}", unknown_name);
@@ -1157,6 +1187,13 @@ mod tests {
                 &crate::config::ModelConfig::tiny_test()
             ),
             WeightTarget::LmHead
+        );
+        assert_eq!(
+            LlamaWeightMapper::map_weight(
+                "lm_head.bias",
+                &crate::config::ModelConfig::tiny_test()
+            ),
+            WeightTarget::LmHeadBias
         );
     }
 
@@ -1800,6 +1837,10 @@ mod tests {
             WeightTarget::LmHead
         );
         assert_eq!(
+            Gpt2WeightMapper::map_weight("lm_head.bias", &config),
+            WeightTarget::LmHeadBias
+        );
+        assert_eq!(
             Gpt2WeightMapper::map_weight("transformer.h.0.attn.c_attn.weight", &config),
             WeightTarget::AttentionQkvSplit { layer_idx: 0 }
         );
@@ -1844,6 +1885,10 @@ mod tests {
         assert_eq!(
             PhiWeightMapper::map_weight("lm_head.weight", &config),
             WeightTarget::LmHead
+        );
+        assert_eq!(
+            PhiWeightMapper::map_weight("lm_head.bias", &config),
+            WeightTarget::LmHeadBias
         );
         assert_eq!(
             PhiWeightMapper::map_weight("transformer.h.0.attn.q_proj.weight", &config),
@@ -1915,6 +1960,10 @@ mod tests {
         assert_eq!(
             GemmaWeightMapper::map_weight("lm_head.weight", &config),
             WeightTarget::LmHead
+        );
+        assert_eq!(
+            GemmaWeightMapper::map_weight("lm_head.bias", &config),
+            WeightTarget::LmHeadBias
         );
         assert_eq!(
             GemmaWeightMapper::map_weight("model.layers.0.self_attn.q_proj.weight", &config),

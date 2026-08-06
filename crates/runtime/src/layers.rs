@@ -105,6 +105,9 @@ pub struct RmsNorm {
     pub bias: Option<Tensor>,
     pub eps: f32,
     pub kind: NormKind,
+    /// Gemma-style one-centered norm: `out = x * rms * (1 + w)` instead of
+    /// `x * rms * w`. Applies to all Gemma/Gemma-2 norms.
+    pub one_centered: bool,
 }
 
 impl RmsNorm {
@@ -114,6 +117,18 @@ impl RmsNorm {
             bias: None,
             eps,
             kind: NormKind::Rms,
+            one_centered: false,
+        }
+    }
+
+    /// One-centered (Gemma) RMSNorm.
+    pub fn new_one_centered(weight: Tensor, eps: f32) -> Self {
+        Self {
+            weight,
+            bias: None,
+            eps,
+            kind: NormKind::Rms,
+            one_centered: true,
         }
     }
 
@@ -124,6 +139,7 @@ impl RmsNorm {
             bias,
             eps,
             kind: NormKind::Layer,
+            one_centered: false,
         }
     }
 
@@ -134,6 +150,7 @@ impl RmsNorm {
             bias: None,
             eps,
             kind: NormKind::Rms,
+            one_centered: false,
         }
     }
 
@@ -144,7 +161,10 @@ impl RmsNorm {
     pub fn forward_gpu(&self, input: &Tensor, gpu: Option<&GpuContext>) -> Tensor {
         #[cfg(feature = "gpu")]
         if let Some(ctx) = gpu {
-            if self.kind == NormKind::Rms && (input.is_gpu() || self.weight.is_gpu()) {
+            if self.kind == NormKind::Rms
+                && !self.one_centered
+                && (input.is_gpu() || self.weight.is_gpu())
+            {
                 return ctx
                     .rms_norm(input, &self.weight, self.eps)
                     .unwrap_or_else(|e| {
@@ -180,7 +200,13 @@ impl RmsNorm {
             let inv_rms = 1.0 / (sum_sq / hidden as f32 + eps).sqrt();
             let w_row = &w_slice[..hidden];
             let out_row = &mut out_slice[i * hidden..][..hidden];
-            bitllm_tensor::simd::f32_mul_scaled(row, w_row, inv_rms, out_row);
+            if self.one_centered {
+                for j in 0..hidden {
+                    out_row[j] = row[j] * (1.0 + w_row[j]) * inv_rms;
+                }
+            } else {
+                bitllm_tensor::simd::f32_mul_scaled(row, w_row, inv_rms, out_row);
+            }
         }
 
         result
@@ -276,3 +302,34 @@ impl Embedding {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_rms_norm_one_centered() {
+        let input = Tensor::from_slice(&[3.0, 4.0, 5.0, 12.0], &[2, 2]);
+        let eps = 1e-5;
+
+        let norm = RmsNorm::new_one_centered(Tensor::ones(&[2], DType::F32), eps);
+        let out = norm.forward(&input);
+
+        let standard = RmsNorm::new(Tensor::ones(&[2], DType::F32), eps);
+        let std_out = standard.forward(&input);
+
+        let one = out.as_f32_slice();
+        let std = std_out.as_f32_slice();
+        for i in 0..4 {
+            assert!((one[i] - 2.0 * std[i]).abs() < 1e-5, "one-centered (w=1) scales by (1 + w) = 2");
+        }
+
+        let zero = RmsNorm::new_one_centered(Tensor::zeros(&[2], DType::F32), eps);
+        let z_out = zero.forward(&input);
+        let zin = z_out.as_f32_slice();
+        for i in 0..4 {
+            assert!((zin[i] - std[i]).abs() < 1e-5, "one-centered (w=0) equals standard RMSNorm");
+        }
+    }
+}
+

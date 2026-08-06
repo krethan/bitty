@@ -198,6 +198,24 @@ pub struct ModelConfig {
     /// from `hidden_size / num_heads`). `None` = `hidden_size / num_heads`.
     #[serde(default)]
     pub head_dim: Option<usize>,
+    /// Gemma-2 style post-feedforward RMSNorm applied to the MLP output before
+    /// the residual add.
+    #[serde(default)]
+    pub post_ffn_norm: bool,
+    /// Gemma-style one-centered RMSNorm: `out = x * rms * (1 + w)` instead of
+    /// the standard `x * rms * w`. Applies to Gemma and Gemma-2.
+    #[serde(default)]
+    pub one_centered_norm: bool,
+    /// Softcap applied to attention logits before softmax (Gemma-2).
+    #[serde(default)]
+    pub attn_logit_softcap: Option<f32>,
+    /// Softcap applied to the final output logits (Gemma-2).
+    #[serde(default)]
+    pub final_logit_softcap: Option<f32>,
+    /// Gemma-2 query pre-attention scalar. When set, the attention logit scale
+    /// is `query_pre_attn_scalar**-0.5` instead of the default `head_dim**-0.5`.
+    #[serde(default)]
+    pub query_pre_attn_scalar: Option<f32>,
 }
 
 fn default_true() -> bool {
@@ -216,6 +234,25 @@ pub struct RopeScaling {
 impl ModelConfig {
     pub fn head_dim(&self) -> usize {
         self.head_dim.unwrap_or(self.hidden_size / self.num_heads)
+    }
+
+    /// The pre-softmax logit scale. Gemma-2 replaces the default
+    /// `head_dim**-0.5` with `query_pre_attn_scalar**-0.5`.
+    pub fn attn_logit_scale(&self) -> f32 {
+        match self.query_pre_attn_scalar {
+            Some(s) if s > 0.0 => s.sqrt().recip(),
+            _ => (self.head_dim() as f32).sqrt().recip(),
+        }
+    }
+
+    /// Attention logit soft-cap `cap`, or `0.0` to disable it.
+    pub fn attn_logit_softcap(&self) -> f32 {
+        self.attn_logit_softcap.unwrap_or(0.0)
+    }
+
+    /// Final logit soft-cap `cap`, or `0.0` to disable it.
+    pub fn final_logit_softcap(&self) -> f32 {
+        self.final_logit_softcap.unwrap_or(0.0)
     }
 
     pub fn num_kv_heads(&self) -> usize {
@@ -276,6 +313,11 @@ impl ModelConfig {
             qk_norm: false,
             sliding_window: None,
             head_dim: None,
+            post_ffn_norm: false,
+            one_centered_norm: false,
+            attn_logit_softcap: None,
+            final_logit_softcap: None,
+            query_pre_attn_scalar: None,
         }
     }
 
@@ -301,6 +343,11 @@ impl ModelConfig {
             qk_norm: false,
             sliding_window: None,
             head_dim: None,
+            post_ffn_norm: false,
+            one_centered_norm: false,
+            attn_logit_softcap: None,
+            final_logit_softcap: None,
+            query_pre_attn_scalar: None,
         }
     }
 
@@ -360,6 +407,15 @@ impl ModelConfig {
 
         let architecture = Architecture::from_huggingface(&v).unwrap_or(Architecture::Llama);
 
+        let is_gemma2 = v.get("model_type").and_then(|m| m.as_str()) == Some("gemma2")
+            || v.get("architectures")
+                .and_then(|a| a.as_array())
+                .is_some_and(|a| {
+                    a.iter().any(|x| {
+                        x.as_str().is_some_and(|s| s.to_lowercase().contains("gemma2"))
+                    })
+                });
+
         // Per-architecture defaults, overridable by explicit config keys.
         let activation = v
             .get("hidden_act")
@@ -393,6 +449,18 @@ impl ModelConfig {
         let sliding_window = get_u64("sliding_window").map(Some).unwrap_or(None);
         let head_dim = get_u64("head_dim").map(Some).unwrap_or(None);
 
+        let post_ffn_norm = v
+            .get("use_post_ffw_norm")
+            .and_then(|u| u.as_bool())
+            .unwrap_or(is_gemma2);
+        let one_centered_norm = v
+            .get("one_centered_norm")
+            .and_then(|u| u.as_bool())
+            .unwrap_or(matches!(architecture, Architecture::Gemma));
+        let attn_logit_softcap = get_f32("attn_logit_softcapping");
+        let final_logit_softcap = get_f32("final_logit_softcapping");
+        let query_pre_attn_scalar = get_f32("query_pre_attn_scalar");
+
         Ok(Self {
             vocab_size,
             hidden_size,
@@ -414,6 +482,11 @@ impl ModelConfig {
             qk_norm,
             sliding_window,
             head_dim,
+            post_ffn_norm,
+            one_centered_norm,
+            attn_logit_softcap,
+            final_logit_softcap,
+            query_pre_attn_scalar,
         })
     }
 }
@@ -664,5 +737,41 @@ mod tests {
         let config = ModelConfig::from_huggingface_json(json).unwrap();
         assert_eq!(config.head_dim(), 256);
         assert_eq!(config.head_dim, Some(256));
+    }
+
+    #[test]
+    fn test_gemma2_config_parse() {
+        let json = r#"{
+            "architectures": ["Gemma2ForCausalLM"],
+            "model_type": "gemma2",
+            "vocab_size": 256000,
+            "hidden_size": 3584,
+            "num_hidden_layers": 42,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 256,
+            "intermediate_size": 14336,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 8192,
+            "sliding_window": 4096,
+            "attn_logit_softcapping": 50.0,
+            "final_logit_softcapping": 30.0,
+            "query_pre_attn_scalar": 224,
+            "tie_word_embeddings": true,
+            "hidden_act": "gelu_pytorch_tanh"
+        }"#;
+
+        let config = ModelConfig::from_huggingface_json(json).unwrap();
+        assert_eq!(config.architecture, Architecture::Gemma);
+        assert!(config.post_ffn_norm, "gemma2 defaults to post-FFN norm");
+        assert!(config.one_centered_norm, "gemma/gemma2 use one-centered RMSNorm");
+        assert_eq!(config.attn_logit_softcap, Some(50.0));
+        assert_eq!(config.final_logit_softcap, Some(30.0));
+        assert_eq!(config.query_pre_attn_scalar, Some(224.0));
+        assert!((config.attn_logit_scale() - 224.0f32.sqrt().recip()).abs() < 1e-6);
+        assert_eq!(config.attn_logit_softcap(), 50.0);
+        assert_eq!(config.final_logit_softcap(), 30.0);
+        assert_eq!(config.sliding_window, Some(4096));
+        assert_eq!(config.activation, Activation::GeluGated);
     }
 }

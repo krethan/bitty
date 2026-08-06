@@ -606,6 +606,8 @@ impl GgufLoader {
             .map(|arr: &[MetadataValue]| arr.len())
             .unwrap_or(32000);
 
+        let is_gemma2 = arch == "gemma2";
+
         let activation = architecture.default_activation();
         let norm_type = if architecture.uses_rms_norm() {
             crate::config::NormType::RmsNorm
@@ -641,6 +643,11 @@ impl GgufLoader {
             qk_norm,
             sliding_window: get_u64("attention.sliding_window").map(|v| v as usize),
             head_dim: get_u64("attention.key_length").map(|v| v as usize),
+            post_ffn_norm: is_gemma2,
+            one_centered_norm: matches!(arch, "gemma" | "gemma2"),
+            attn_logit_softcap: get_f32("attention.logit_softcapping"),
+            final_logit_softcap: get_f32("final_logit_softcapping"),
+            query_pre_attn_scalar: get_f32("attention.query_pre_attn_scalar"),
         })
     }
 }
@@ -659,13 +666,14 @@ pub fn to_torch_layout(t: Tensor) -> Tensor {
     t.reshape(&shape)
 }
 
-/// Undo llama.cpp's RoPE-half interleaving of attention q/k weights.
+/// Undo a RoPE-half interleaving of attention q/k weights.
 ///
-/// For non-interleaved-RoPE models (Llama/Gemma/SmolLM/Qwen) the GGUF converter
-/// stores `attn_q`/`attn_k` with the `head_dim` output axis permuted from torch
-/// order `[d0..d63]` into `[d0, d32, d1, d33, ...]` — i.e. the two RoPE halves
-/// alternate. `attn_v`/`attn_output` and all FFN matrices are stored in plain
-/// torch order, so only q/k need this transform.
+/// Only needed for GGUFs converted from models whose attention uses an
+/// interleaved KQ layout (e.g. MPT/Bloom). Standard non-interleaved-RoPE
+/// architectures (Llama/Gemma/SmolLM/Qwen) store `attn_q`/`attn_k` in plain
+/// torch order and must NOT be run through this — doing so reorders the
+/// projection rows and breaks the model (verified against official
+/// Qwen2.5 GGUFs).
 ///
 /// The tensor is `[out, in]` with `out == n_heads * head_dim`. For a torch
 /// output row `r = h*head_dim + d` (`h` head, `d` dimension), the GGUF row is
@@ -698,6 +706,9 @@ impl GgufWeightMapper {
         if name == "output.weight" {
             return crate::loader::WeightTarget::LmHead;
         }
+        if name == "output.bias" {
+            return crate::loader::WeightTarget::LmHeadBias;
+        }
 
         if let Some(rest) = name.strip_prefix("blk.") {
             let parts: Vec<&str> = rest.split('.').collect();
@@ -719,6 +730,9 @@ impl GgufWeightMapper {
                         "ffn_up.weight" => crate::loader::WeightTarget::FfnUp { layer_idx },
                         "attn_norm.weight" => crate::loader::WeightTarget::AttnNorm { layer_idx },
                         "ffn_norm.weight" => crate::loader::WeightTarget::FfnNorm { layer_idx },
+                        "ffn_post_norm.weight" => {
+                            crate::loader::WeightTarget::PostFfnNorm { layer_idx }
+                        }
                         _ => crate::loader::WeightTarget::Unknown(name.to_string()),
                     };
                 }

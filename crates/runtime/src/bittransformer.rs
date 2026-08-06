@@ -121,6 +121,8 @@ impl BitAttention {
                 kv_len,
                 slot,
                 position,
+                self.config.attn_logit_scale(),
+                self.config.attn_logit_softcap(),
             )
         } else {
             scaled_dot_product_attention(
@@ -134,6 +136,8 @@ impl BitAttention {
                 k_reshaped.shape()[1],
                 0,
                 position,
+                self.config.attn_logit_scale(),
+                self.config.attn_logit_softcap(),
             )
         };
 
@@ -185,8 +189,10 @@ impl BitAttention {
                     batch,
                     kv_lens,
                     None,
-                    &mut acc,
                     &mut scores,
+                    &mut acc,
+                    self.config.attn_logit_scale(),
+                    self.config.attn_logit_softcap(),
                 )
             }
             None => {
@@ -203,8 +209,10 @@ impl BitAttention {
                     batch,
                     &ones,
                     None,
-                    &mut acc,
                     &mut scores,
+                    &mut acc,
+                    self.config.attn_logit_scale(),
+                    self.config.attn_logit_softcap(),
                 )
             }
         };
@@ -423,6 +431,8 @@ fn scaled_dot_product_attention(
     kv_seq_len: usize,
     slot: usize,
     position: usize,
+    attn_scale: f32,
+    softcap: f32,
 ) -> Tensor {
     // Cache tensors are [batch, num_kv_heads, max_seq_len, head_dim]; a bare
     // (non-cached) k/v is [num_heads, seq_len, head_dim].
@@ -432,7 +442,6 @@ fn scaled_dot_product_attention(
     } else {
         k.shape()[1]
     };
-    let scale = (head_dim as f32).sqrt();
     let kv_groups = num_heads / num_kv_heads;
 
     let mut output = Tensor::zeros(&[num_heads, seq_len, head_dim], DType::F32);
@@ -466,7 +475,13 @@ fn scaled_dot_product_attention(
             for pos_k in 0..attn_len {
                 let k_row = &k_ptr[head_base + pos_k * head_dim..][..head_dim];
                 let dot = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>();
-                scores.push(dot / scale);
+                let score = if softcap > 0.0 {
+                    let s = dot * attn_scale;
+                    softcap * (s / softcap).tanh()
+                } else {
+                    dot * attn_scale
+                };
+                scores.push(score);
             }
 
             // Numerically stable softmax

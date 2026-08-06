@@ -1,9 +1,11 @@
+#[cfg(feature = "rocm")]
 fn is_wsl() -> bool {
     std::fs::read_to_string("/proc/version")
         .map(|v| v.to_lowercase().contains("microsoft"))
         .unwrap_or(false)
 }
 
+#[cfg(feature = "rocm")]
 fn detect_rocm_path() -> Option<String> {
     if let Ok(path) = std::env::var("ROCM_PATH") {
         return Some(path);
