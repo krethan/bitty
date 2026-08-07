@@ -33,4 +33,4 @@
 - [x] Verify Gemma2/Phi with real checkpoints (0-skip + finite-logit regression tests)
 - [x] Add QAT activation recorder validation for Qwen
 - [x] Add a GGUF-vs-safetensors weight-equivalence unit test to prevent q/k layout regressions
-- [ ] GPU backend testing
+- [x] GPU backend testing: hardware-gated GPU-vs-CPU parity tests for `GpuContext` ops (matmul/add/sub/mul/scale/softmax/rope/rms-norm) and end-to-end model forward incl. the KV-cache decode path. Skip cleanly without a device; run on a ROCm host via `cargo test --features bitllm-runtime/gpu,bitllm-rocm/rocm`.
