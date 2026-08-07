@@ -167,15 +167,17 @@ impl BpeTokenizer {
         };
         let mut tokens = Vec::new();
 
+        // Build priority map once: (left, right) -> earliest merge index.
+        // The keys borrow from `self.merges`, so this is valid for the whole
+        // encoding pass.
+        let mut priority: HashMap<(&str, &str), usize> = HashMap::new();
+        for (i, (l, r)) in self.merges.iter().enumerate() {
+            let key = (l.as_str(), r.as_str());
+            priority.entry(key).or_insert(i);
+        }
+
         for word in words {
             let mut chars: Vec<String> = word.chars().map(|c| c.to_string()).collect();
-
-            // Build priority map: (left, right) -> earliest merge index
-            let mut priority: HashMap<(&str, &str), usize> = HashMap::new();
-            for (i, (l, r)) in self.merges.iter().enumerate() {
-                let key = (l.as_str(), r.as_str());
-                priority.entry(key).or_insert(i);
-            }
 
             // Iteratively apply the highest-priority available merge
             loop {

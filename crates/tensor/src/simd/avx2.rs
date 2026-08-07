@@ -274,6 +274,14 @@ unsafe fn fast_exp256(x: __m256) -> __m256 {
     let c4 = _mm256_set1_ps(1.0 / 120.0);
     let c5 = _mm256_set1_ps(1.0 / 720.0);
 
+    // Clamp to the f32 representable range. Beyond ~±87.3 the true exp either
+    // overflows to inf or underflows to 0; without the clamp, the integer
+    // exponent in `fast_pow2_256` leaves the biased range and produces
+    // garbage (NaN / huge wrong signs) instead of 0/inf.
+    let max_x = _mm256_set1_ps(88.72);
+    let min_x = _mm256_set1_ps(-87.34);
+    let x = _mm256_min_ps(_mm256_max_ps(x, min_x), max_x);
+
     let x_ln2 = _mm256_mul_ps(x, ln2_inv);
     let sign_mask = _mm256_set1_ps(-0.0);
     let half = _mm256_set1_ps(0.5);

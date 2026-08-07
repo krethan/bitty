@@ -119,7 +119,7 @@ pub fn load_model(opts: &ModelLoadOptions) -> anyhow::Result<LoadedModel> {
     }
 }
 
-fn load_gguf_weights(
+pub fn load_gguf_weights(
     model: &mut Model,
     loader: &bitllm_runtime::gguf::GgufLoader,
     device: bitllm_tensor::Device,

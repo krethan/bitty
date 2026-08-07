@@ -31,3 +31,4 @@ bitllm-runtime = { path = "../runtime" }
 bitllm-tokenizer = { path = "../tokenizer" }
 bitllm-tensor = { path = "../tensor" }
 bitllm-rocm = { path = "../rocm" }
+rayon.workspace = true

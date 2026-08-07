@@ -463,6 +463,54 @@ mod tests {
         }
     }
 
+    /// Regression: the AVX2 exp must saturate (0 / +inf) for inputs outside
+    /// the f32 range instead of emitting NaN or wrong-sign garbage. The old
+    /// `fast_pow2_256` left the biased-exponent range and corrupted the whole
+    /// softmax (attention ppl went to NaN on a real WikiText-2 window).
+    #[test]
+    fn test_simd_f32_exp_overflow_range() {
+        let a = vec![
+            -1000.0, -500.0, -200.0, -100.0, -90.0, 90.0, 100.0, 200.0,
+        ];
+        let mut out = vec![0.0f32; 8];
+        simd::f32_exp(&a, &mut out);
+        for i in 0..8 {
+            assert!(
+                out[i].is_finite() || out[i] == f32::INFINITY,
+                "f32_exp emitted garbage at {} (input {}): got {}",
+                i,
+                a[i],
+                out[i]
+            );
+            let expected = a[i].exp();
+            if a[i] < 0.0 {
+                assert!(
+                    out[i] >= 0.0,
+                    "exp of negative input must be >= 0, got {} at {}",
+                    out[i],
+                    i
+                );
+            } else {
+                assert!(
+                    out[i] > 0.0,
+                    "exp of positive input must be > 0, got {} at {}",
+                    out[i],
+                    i
+                );
+            }
+            if out[i].is_finite() && expected.is_finite() {
+                assert!(
+                    (out[i] - expected).abs() <= 1e-2 * expected.abs().max(1e-30),
+                    "f32_exp off at {} (input {}): got {} expected {}",
+                    i,
+                    a[i],
+                    out[i],
+                    expected
+                );
+            }
+        }
+    }
+
     #[test]
     fn test_simd_f32_matmul() {
         let m = 4;

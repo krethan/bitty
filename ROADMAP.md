@@ -30,9 +30,25 @@ PPL values above are the cross-entropy of a fixed natural-language paragraph (se
 untrained checkpoints score at the uniform floor by construction — the number only
 confirms finite, non-degenerate loading, not quality.
 
+## WikiText-2 (sliding-window eval, `crates/server/examples/corpus_ppl.rs`)
+
+Every token scored exactly once (context 512, stride 512, no BOS/EOS).
+
+| Model | Split | Tokens | PPL | bits/tok |
+|-------|-------|--------|-----|----------|
+| SmolLM2-135M-Instruct | valid | 273,867 | 21.545 | 4.429 |
+| SmolLM2-135M-Instruct | test | 312,143 | 20.368 | 4.348 |
+
+Note: this eval runs on CPU (8 workers, ~27 min per split on a Ryzen 7 3700X).
+
 ## Known Issues
 
 - The tokenizer byte-level pre-tokenization changed SmolLM2 ppl from 38.30 to 12.35 (improvement). Any downstream consumers relying on the old broken tokenization will see different results.
+
+## Performance & Numerical Fixes
+
+- Tokenizer: the BPE merge-priority map was rebuilt for every word (~50k merge lookups per word). Hoisted out of the word loop → encoding a 1.1 MB corpus went from ~30 min to 0.3 s (same output, verified token-for-token).
+- AVX2 `fast_exp256`: the integer exponent in `fast_pow2_256` left the biased range for inputs beyond ~±87, producing garbage (NaN / huge wrong signs) instead of saturating to 0/+inf. This corrupted a full softmax row at a specific position and made the WikiText-2 valid-set PPL NaN (SmolLM2). Fixed by clamping the exp input to the f32 range before the polynomial; regression test `test_simd_f32_exp_overflow_range` guards it.
 
 ## Next Steps
 
