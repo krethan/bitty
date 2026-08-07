@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
     let tensor_name = args.next().expect("tensor name");
     let out = args.next().expect("output path");
 
-    let mut reader = GgufLoader::load(&gguf_path)?;
+    let reader = GgufLoader::load(&gguf_path)?;
     let t = reader.load_tensor(&tensor_name)?;
     let t = to_torch_layout(t);
     let s = t.as_f32_slice();
