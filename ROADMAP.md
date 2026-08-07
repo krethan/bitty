@@ -21,8 +21,14 @@
 | Qwen2.5-0.5B-Instruct | safetensors (BF16) | 5.81 | Working (bias fix) |
 | Qwen2.5-0.5B-Instruct | GGUF Q8_0 | 5.77 | Matches safetensors |
 | Qwen2.5-0.5B-Instruct | GGUF F16 | 5.77 | Matches safetensors |
-| Gemma2 (tiny) | safetensors | — | 0 skipped, finite logits; one-centered norm + softcaps verified |
-| Phi (tiny) | safetensors | — | 0 skipped, finite logits; `lm_head.bias` loaded |
+| Gemma2 (tiny, untrained) | safetensors | 255884 | ≈ uniform floor (256000); 0 skipped, finite logits, one-centered norm + softcaps verified |
+| Phi (tiny, untrained) | safetensors | 1013 | ≈ uniform floor (1024); 0 skipped, finite logits, `lm_head.bias` loaded |
+| Llama (tiny-random) | safetensors | 32648 | ≈ uniform floor (32000); 0 skipped, finite logits |
+
+PPL values above are the cross-entropy of a fixed natural-language paragraph (see
+`crates/server/examples/real_ppl.rs`), reproduced exactly on every run. Tiny
+untrained checkpoints score at the uniform floor by construction — the number only
+confirms finite, non-degenerate loading, not quality.
 
 ## Known Issues
 
