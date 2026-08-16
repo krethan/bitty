@@ -124,5 +124,10 @@ async def main():
         parser.print_help()
 
 
-if __name__ == "__main__":
+def cli():
+    """Console entry point for the `bitty` command."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli()

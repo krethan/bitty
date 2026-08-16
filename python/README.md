@@ -4,6 +4,37 @@ The Python side of this repository is **Bitty**, an autonomous software-developm
 
 This is a scaffold: agents are thin wrappers, and the actual inference is delegated to an external LLM (see [Local AI support](#local-ai-support)).
 
+## Installation
+
+```bash
+pip install -e ./python          # adds the `bitty` command
+pip install -e ./python[yaml]    # same, with PyYAML for config files
+```
+
+`import bitty` works without PyYAML — it is only needed to load/save YAML
+config files (`Bitty(config_path=...)`).
+
+## Usage
+
+```bash
+bitty --goal "Implement a fast tokenizer"
+bitty --goals "Goal one" "Goal two" --continuous
+```
+
+Or programmatically:
+
+```python
+import asyncio
+from bitty import Bitty
+
+async def main():
+    bitty = Bitty()
+    await bitty.initialize()
+    await bitty.run_development_cycle("Some goal")
+
+asyncio.run(main())
+```
+
 ## Core Components
 
 | Agent | Responsibility |

@@ -4,9 +4,19 @@ Handles all configuration for the autonomous development system
 """
 
 import os
-from pathlib import Path
 from typing import Optional, Dict, Any
-import yaml
+
+
+def _yaml():
+    """Import PyYAML lazily so `import bitty` works without it."""
+    try:
+        import yaml
+    except ImportError as exc:
+        raise ImportError(
+            "PyYAML is required to load or save YAML config files; "
+            "install it with `pip install PyYAML` (or `pip install bitty[yaml]`)"
+        ) from exc
+    return yaml
 
 
 class Config:
@@ -45,7 +55,7 @@ class Config:
             return cls.default()
         
         with open(config_path, 'r') as f:
-            config_data = yaml.safe_load(f)
+            config_data = _yaml().safe_load(f)
         
         return cls(config_data)
     
@@ -93,4 +103,4 @@ class Config:
         
         os.makedirs(os.path.dirname(config_path), exist_ok=True)
         with open(config_path, 'w') as f:
-            yaml.dump(self._data, f)
+            _yaml().dump(self._data, f)

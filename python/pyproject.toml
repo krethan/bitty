@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bitty"
+version = "0.1.0"
+description = "Autonomous AI software development agent scaffold (orchestrates planner/architect/developer/tester/optimizer agents)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6.0"]
+
+[project.scripts]
+bitty = "bitty:cli"
+
+[tool.setuptools]
+packages = ["bitty", "bitty.agent"]

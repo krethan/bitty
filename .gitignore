@@ -4,6 +4,8 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.venv/
 
 # Decoupled hip_tern builds its own workspace artifacts
 /crates/hip_tern/target/

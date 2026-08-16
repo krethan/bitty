@@ -4,7 +4,6 @@ Handles knowledge storage and retrieval for the autonomous development system
 """
 
 import os
-from pathlib import Path
 import pickle
 from typing import Dict, Any
 
@@ -37,7 +36,34 @@ class MemorySystem:
     def retrieve(self, key: str) -> Any:
         """Retrieve data from memory"""
         return self._data.get(key)
-        
-    def initialize(self):
+
+    async def initialize(self):
         """Initialize memory"""
         self.store("initialized", True)
+
+    async def store_cycle(
+        self,
+        goal: str,
+        tasks: Any,
+        design: Any,
+        implementation: Any,
+        test_results: Any,
+        optimized: Any,
+    ) -> None:
+        """Persist a completed development cycle."""
+        self.store(
+            f"cycle_{goal}",
+            {
+                "goal": goal,
+                "tasks": tasks,
+                "design": design,
+                "implementation": implementation,
+                "test_results": test_results,
+                "optimized": optimized,
+            },
+        )
+
+    async def store_error(self, goal: str, error: Any) -> None:
+        """Persist a cycle that failed with an error."""
+        self.store(f"error_{goal}", str(error))
+        self.store("last_error", {"goal": goal, "error": str(error)})
