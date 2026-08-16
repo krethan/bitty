@@ -147,18 +147,18 @@ pub fn ternary_dequantize(qtensor: &QuantizedTensor) -> Tensor {
     if qtensor.config.group_size == 0 {
         let scale = qtensor.scales[0];
         let neg_scale = -scale;
-        for i in 0..n {
+        for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
             let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
-            out_slice[i] = if bit == 1 { scale } else { neg_scale };
+            *slot = if bit == 1 { scale } else { neg_scale };
         }
     } else {
         let group_size = qtensor.config.group_size;
-        for i in 0..n {
+        for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
             let col = i % k;
             let g = col / group_size;
             let scale = qtensor.scales[g];
             let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
-            out_slice[i] = if bit == 1 { scale } else { -scale };
+            *slot = if bit == 1 { scale } else { -scale };
         }
     }
 
