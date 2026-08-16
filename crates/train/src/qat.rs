@@ -1244,6 +1244,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "full 200-step QAT run (~60s); run the slow suite with `cargo test -p bitllm-train -- --ignored`"]
     fn end_to_end_qat_reduces_deployed_error() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
         let windows: Vec<Vec<u32>> = (0..4)
@@ -1282,7 +1283,11 @@ mod tests {
     #[test]
     fn deploy_produces_bit1_model() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
-        let mut qat = QATModel::new(random_model(&config, 5), QATConfig::new());
+        // Deploy mechanics don't depend on convergence, so a short run suffices.
+        let mut qat = QATModel::new(
+            random_model(&config, 5),
+            QATConfig::new().with_steps(20),
+        );
         qat.train(&[(0..8).collect()]);
         let deployed = qat.deploy();
         assert!(deployed.is_bit1());

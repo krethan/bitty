@@ -29,6 +29,9 @@ cargo run --release --bin bitllm -- bench --model tiny --iterations 100
 
 # Run tests
 cargo test --workspace
+
+# Run the slow QAT suite (full 200-step end-to-end training, ~60s)
+cargo test -p bitllm-train -- --ignored
 ```
 
 ## Architecture
