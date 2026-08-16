@@ -443,7 +443,7 @@ impl ModelConfig {
                 .map(|n| n as usize)
                 .or(Some(max_seq_len))
         };
-        let qk_norm = v.get("qk_norm").and_then(|q| q.as_bool()).unwrap_or_else(|| {
+        let qk_norm = v.get("qk_norm").and_then(|q| q.as_bool()).unwrap_or({
             matches!(architecture, Architecture::Gemma)
         });
         let sliding_window = get_u64("sliding_window").map(Some).unwrap_or(None);

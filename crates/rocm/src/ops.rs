@@ -259,6 +259,7 @@ impl GpuOps {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn bit1_matmul(
         a: &GpuBuffer,
         w: &GpuBuffer,

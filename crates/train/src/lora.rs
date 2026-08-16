@@ -261,8 +261,8 @@ impl TernaryLoRA {
                 }
             }
             if let Some(combo) = best_combo {
-                for r in 0..rank {
-                    set_trit(&mut self.a_packed, o * rank + r, combo[r]);
+                for (r, c) in combo.iter().enumerate().take(rank) {
+                    set_trit(&mut self.a_packed, o * rank + r, *c);
                 }
                 // Update the residual in place: e[tt,o] += s·Σ_r δ_r·midu[tt,r].
                 for tt in 0..t {
@@ -368,8 +368,8 @@ impl TernaryLoRA {
     fn a_dequant(&self) -> Tensor {
         let (out, rank) = (self.config.output_dim, self.config.rank);
         let mut data = vec![0.0f32; out * rank];
-        for idx in 0..out * rank {
-            data[idx] = trit_at(&self.a_packed, idx) as f32 * self.scale_a;
+        for (idx, d) in data.iter_mut().enumerate() {
+            *d = trit_at(&self.a_packed, idx) as f32 * self.scale_a;
         }
         Tensor::from_slice(&data, &[out, rank])
     }
@@ -377,8 +377,8 @@ impl TernaryLoRA {
     fn b_dequant(&self) -> Tensor {
         let (rank, inn) = (self.config.rank, self.config.input_dim);
         let mut data = vec![0.0f32; rank * inn];
-        for idx in 0..rank * inn {
-            data[idx] = trit_at(&self.b_packed, idx) as f32 * self.scale_b;
+        for (idx, d) in data.iter_mut().enumerate() {
+            *d = trit_at(&self.b_packed, idx) as f32 * self.scale_b;
         }
         Tensor::from_slice(&data, &[rank, inn])
     }

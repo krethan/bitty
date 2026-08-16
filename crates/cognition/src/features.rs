@@ -46,7 +46,7 @@ impl FeatureExtractor {
 
         let projections: Vec<HyperVector> = weights
             .chunks(input_dim)
-            .map(|chunk| HyperVector::from_f32_slice(chunk))
+            .map(HyperVector::from_f32_slice)
             .collect();
 
         Self {

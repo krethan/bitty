@@ -119,8 +119,8 @@ fn top_p_sample(logits: &[f32], p: f32, temperature: f32) -> u32 {
 
     let sum2: f32 = probs[..cutoff].iter().sum();
     let inv_sum2 = 1.0 / sum2;
-    for i in 0..cutoff {
-        probs[i] *= inv_sum2;
+    for p in probs[..cutoff].iter_mut() {
+        *p *= inv_sum2;
     }
 
     let mut rng = rand::thread_rng();

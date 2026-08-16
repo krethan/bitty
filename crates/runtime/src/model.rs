@@ -514,8 +514,7 @@ impl Model {
             }
         }
 
-        let normed = self.norm.forward_gpu(&hidden, gpu);
-        normed
+        self.norm.forward_gpu(&hidden, gpu)
     }
 
     /// Batched decode step. `next_tokens[b]` is the current token for batch

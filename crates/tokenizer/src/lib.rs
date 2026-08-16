@@ -413,7 +413,7 @@ impl BpeTokenizer {
         let rest = &chars[i + 1..];
         const TWO: [&[char]; 4] = [&['s'], &['t'], &['m'], &['d']];
         for suffix in TWO {
-            if rest.len() >= 1 && eq(rest[0], suffix[0]) {
+            if !rest.is_empty() && eq(rest[0], suffix[0]) {
                 return Some(2);
             }
         }

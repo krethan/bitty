@@ -495,9 +495,7 @@ fn scaled_dot_product_attention(
 
             // Weighted sum of values
             let out_row = &mut out_ptr[h * seq_len * head_dim + pos_q * head_dim..][..head_dim];
-            for d in 0..head_dim {
-                out_row[d] = 0.0;
-            }
+            out_row.fill(0.0);
             for (pos_k, weight) in exp_scores.iter().enumerate() {
                 let v_row = &v_ptr[head_base + pos_k * head_dim..][..head_dim];
                 for d in 0..head_dim {

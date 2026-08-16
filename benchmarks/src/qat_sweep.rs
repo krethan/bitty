@@ -136,8 +136,8 @@ pub fn bench_qat_sweep() -> Vec<QatSweepRow> {
                     best_steps = steps;
                 }
 
-                print!(
-                    "    lr={:.3} steps={:>3}  MSE ratio={:.4}  ppl={:.2}  train={:.5}->{:.5}\n",
+                println!(
+                    "    lr={:.3} steps={:>3}  MSE ratio={:.4}  ppl={:.2}  train={:.5}->{:.5}",
                     lr, steps, ratio, ppl_qat, train_mse_start, train_mse_end
                 );
             }

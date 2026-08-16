@@ -281,8 +281,8 @@ impl Tensor {
         let out = result.as_f32_slice_mut();
         match self.dtype {
             DType::BIT1 => {
-                for i in 0..n {
-                    out[i] = self.get_flat_f32(i);
+                for (i, o) in out.iter_mut().enumerate().take(n) {
+                    *o = self.get_flat_f32(i);
                 }
             }
             DType::F32 => unreachable!(),
@@ -354,9 +354,13 @@ impl Tensor {
         } else {
             let self_f32 = self.to_f32();
             let other_f32 = other.to_f32();
-            let out = self.as_f32_slice_mut();
-            for i in 0..out.len() {
-                out[i] = self_f32.as_f32_slice()[i] + other_f32.as_f32_slice()[i];
+            for ((o, a), b) in self
+                .as_f32_slice_mut()
+                .iter_mut()
+                .zip(self_f32.as_f32_slice())
+                .zip(other_f32.as_f32_slice())
+            {
+                *o = *a + b;
             }
         }
         Ok(())

@@ -156,8 +156,8 @@ impl HyperVector {
         assert_eq!(self.dims, other.dims, "dimension mismatch in xnor");
         let word_len = self.data.len();
         let mut data = vec![0u64; word_len];
-        for i in 0..word_len {
-            data[i] = !(self.data[i] ^ other.data[i]);
+        for (i, d) in data.iter_mut().enumerate() {
+            *d = !(self.data[i] ^ other.data[i]);
         }
         let remainder = self.dims % 64;
         if remainder > 0 {
@@ -173,8 +173,8 @@ impl HyperVector {
     pub fn not(&self) -> Self {
         let word_len = self.data.len();
         let mut data = vec![0u64; word_len];
-        for i in 0..word_len {
-            data[i] = !self.data[i];
+        for (i, d) in data.iter_mut().enumerate() {
+            *d = !self.data[i];
         }
         let remainder = self.dims % 64;
         if remainder > 0 {

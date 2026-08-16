@@ -47,7 +47,8 @@ pub fn time_iters<F: FnMut()>(iterations: usize, mut f: F) -> BenchmarkResult {
     let mut times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
         let start = Instant::now();
-        std::hint::black_box(f());
+        f();
+        std::hint::black_box(());
         times.push(start.elapsed().as_secs_f64());
     }
 
@@ -77,14 +78,15 @@ pub fn auto_iters<F: FnMut()>(mut f: F) -> (usize, f64) {
 
     // Single iteration to estimate runtime
     let start = Instant::now();
-    std::hint::black_box(f());
+    f();
+    std::hint::black_box(());
     let single = start.elapsed().as_secs_f64();
 
     let target = 0.2; // 200 ms
     let iters = if single <= 0.0 {
         100
     } else if single >= target {
-        3.min(100)
+        3
     } else {
         ((target / single).ceil() as usize).clamp(3, 500)
     };

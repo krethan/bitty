@@ -11,6 +11,7 @@ use rayon::prelude::*;
 /// For the int8 path (`act_scale`/`inv_scale` set), the activation is the
 /// int8-quantized value `xq`, so the correction is `xq · act_scale · (val −
 /// sign)`, keeping the integer path exact except for this final f32 add.
+#[allow(clippy::too_many_arguments)]
 fn apply_outlier_correction(
     out: &mut [f32],
     input: &[f32],
@@ -139,11 +140,11 @@ fn fused_bit1_matmul_single_scale(
                 // lut[mask] = sum of mag[off] where the mask bit is 1
                 let nlut = 1usize << nbits;
                 let mut lut = [0.0f32; 256];
-                for off in 0..nbits {
+                for (off, m) in mag.iter().enumerate().take(nbits) {
                     let step = 1 << off;
                     for mask in (step..nlut).rev() {
                         if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + mag[off];
+                            lut[mask] = lut[mask ^ step] + *m;
                         }
                     }
                 }
@@ -236,7 +237,7 @@ fn fused_bit1_matmul_grouped(
     const KB: usize = 128;
     let data = &weight.data;
     let gs = weight.config.group_size;
-    assert!(gs > 0 && gs % 8 == 0, "grouped kernels require a multiple-of-8 group_size");
+    assert!(gs > 0 && gs.is_multiple_of(8), "grouped kernels require a multiple-of-8 group_size");
 
     out.fill(0.0);
 
@@ -287,11 +288,11 @@ fn fused_bit1_matmul_grouped(
 
                 let nlut = 1usize << nbits;
                 let mut lut = [0.0f32; 256];
-                for off in 0..nbits {
+                for (off, m) in mag.iter().enumerate().take(nbits) {
                     let step = 1 << off;
                     for mask in (step..nlut).rev() {
                         if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + mag[off];
+                            lut[mask] = lut[mask ^ step] + *m;
                         }
                     }
                 }
@@ -406,8 +407,7 @@ fn fused_bit1_int8_matmul_single_scale(
     input.par_chunks(k).zip(out.par_chunks_mut(n)).for_each(|(in_row, out_row)| {
         // Per-token absmax int8 activation scale.
         let mut max_abs = 0.0f32;
-        for t in 0..k {
-            let a = in_row[t].abs();
+        for a in in_row.iter().take(k).map(|v| v.abs()) {
             if a > max_abs {
                 max_abs = a;
             }
@@ -445,11 +445,11 @@ fn fused_bit1_int8_matmul_single_scale(
 
                 let nlut = 1usize << nbits;
                 lut[0] = 0;
-                for off in 0..nbits {
+                for (off, m) in mag.iter().enumerate().take(nbits) {
                     let step = 1 << off;
                     for mask in (step..nlut).rev() {
                         if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + mag[off];
+                            lut[mask] = lut[mask ^ step] + *m;
                         }
                     }
                 }
@@ -543,15 +543,14 @@ fn fused_bit1_int8_matmul_grouped(
     const KB: usize = 128;
     let data = &weight.data;
     let gs = weight.config.group_size;
-    assert!(gs > 0 && gs % 8 == 0, "grouped kernels require a multiple-of-8 group_size");
+    assert!(gs > 0 && gs.is_multiple_of(8), "grouped kernels require a multiple-of-8 group_size");
 
     out.fill(0.0);
 
     // Parallelize over input rows
     input.par_chunks(k).zip(out.par_chunks_mut(n)).for_each(|(in_row, out_row)| {
         let mut max_abs = 0.0f32;
-        for t in 0..k {
-            let a = in_row[t].abs();
+        for a in in_row.iter().take(k).map(|v| v.abs()) {
             if a > max_abs {
                 max_abs = a;
             }
@@ -597,11 +596,11 @@ fn fused_bit1_int8_matmul_grouped(
 
                 let nlut = 1usize << nbits;
                 lut[0] = 0;
-                for off in 0..nbits {
+                for (off, m) in mag.iter().enumerate().take(nbits) {
                     let step = 1 << off;
                     for mask in (step..nlut).rev() {
                         if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + mag[off];
+                            lut[mask] = lut[mask ^ step] + *m;
                         }
                     }
                 }
@@ -663,8 +662,8 @@ fn fused_bit1_int8_matmul_grouped(
         for j in 0..n {
             out_row[j] += acc[j] as f32 * weight.scales[cur_g];
         }
-        for j in 0..n {
-            out_row[j] *= act_scale;
+        for o in out_row.iter_mut().take(n) {
+            *o *= act_scale;
         }
 
         apply_outlier_correction(

@@ -26,7 +26,7 @@ pub fn quantize_grouped_with_outliers(
     group_size: usize,
 ) -> QuantizedTensor {
     assert!(
-        group_size == 0 || group_size % 8 == 0,
+        group_size == 0 || group_size.is_multiple_of(8),
         "group_size must be 0 or a multiple of 8 (got {group_size})"
     );
 

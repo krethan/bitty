@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
 use bitllm_tensor::Tensor;
 
+type QuantScheme = (&'static str, Box<dyn Fn(&Tensor) -> Tensor>);
+
 // --- Metric helpers ---
 
 fn mse(a: &[f32], b: &[f32]) -> f32 {
@@ -138,7 +140,7 @@ fn print_agg(label: &str, mean: &Metrics, std: &Metrics) {
 fn bench_weight_reconstruction(size: usize, n_trials: usize) {
     println!("  {}x{} weight reconstruction ({} trials, seeded RNG):", size, size, n_trials);
 
-    let schemes: Vec<(&str, Box<dyn Fn(&Tensor) -> Tensor>)> = vec![
+    let schemes: Vec<QuantScheme> = vec![
         ("Ternary (2-bit)", Box::new(quantize_ternary)),
     ];
 
@@ -172,7 +174,7 @@ fn bench_inference_output(size: usize, n_trials: usize) {
     println!("  {}x{} inference output comparison ({} trials):", size, size, n_trials);
     println!("  (output = input @ quantized_weight^T, compared to input @ weight^T)\n");
 
-    let schemes: Vec<(&str, Box<dyn Fn(&Tensor) -> Tensor>)> = vec![
+    let schemes: Vec<QuantScheme> = vec![
         ("Ternary (2-bit)", Box::new(quantize_ternary)),
     ];
 

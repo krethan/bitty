@@ -35,7 +35,7 @@ pub enum InferenceRequest {
         token_tx: mpsc::Sender<u32>,
     },
     Swap {
-        model: Model,
+        model: Box<Model>,
         ack: oneshot::Sender<()>,
     },
 }
@@ -92,7 +92,7 @@ impl InferenceWorker {
                         task_metrics.inc_tokens(count);
                     }
                     InferenceRequest::Swap { model: new_model, ack } => {
-                        model = new_model;
+                        model = *new_model;
                         task_metrics.inc_swaps();
                         log::info!("Inference worker: model hot-swapped");
                         let _ = ack.send(());
@@ -164,7 +164,10 @@ impl InferenceWorker {
     /// (i.e. after any in-flight request finishes) or the queue is full.
     pub async fn swap(&self, model: Model) -> Result<(), WorkerError> {
         let (ack_tx, ack_rx) = oneshot::channel();
-        self.enqueue(InferenceRequest::Swap { model, ack: ack_tx })?;
+        self.enqueue(InferenceRequest::Swap {
+            model: Box::new(model),
+            ack: ack_tx,
+        })?;
         let _ = ack_rx.await;
         Ok(())
     }

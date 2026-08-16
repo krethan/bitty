@@ -314,12 +314,12 @@ pub fn print_real_inference_fit() {
     });
 
     println!(
-        "  {:32} {:>10}  {}",
-        "Format", "Total VRAM", "Fits?"
+        "  {:32} {:>10}  Fits?",
+        "Format", "Total VRAM"
     );
     println!(
-        "  {:32} {:>10}  {}",
-        "──────", "─────────", "────"
+        "  {:32} {:>10}  ────",
+        "──────", "─────────"
     );
 
     let gpus: &[(&str, u64)] = &[

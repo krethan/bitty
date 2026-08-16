@@ -508,9 +508,9 @@ fn messages_to_prompt(messages: &[ChatMessage]) -> String {
     let mut prompt = String::new();
     for msg in messages {
         prompt.push_str(&msg.role);
-        prompt.push_str("\n");
+        prompt.push('\n');
         prompt.push_str(&msg.content);
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
     prompt
 }

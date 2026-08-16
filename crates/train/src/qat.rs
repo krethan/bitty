@@ -482,6 +482,7 @@ fn sdpa_forward(
 
 /// Exact SDPA backward using the saved softmax weights. Returns `(gq, gk, gv)`
 /// in the head layout.
+#[allow(clippy::too_many_arguments)]
 fn sdpa_backward(
     q: &Tensor,
     k: &Tensor,
@@ -668,7 +669,7 @@ fn layer_forward(p: &LayerProj, h_in: &Tensor, cfg: &ModelConfig) -> (Tensor, Sa
     )
 }
 
-fn acc_grad(grad: &mut Vec<f32>, g: Tensor) {
+fn acc_grad(grad: &mut [f32], g: Tensor) {
     let gs = g.as_f32_slice();
     debug_assert_eq!(grad.len(), gs.len());
     for (a, &v) in grad.iter_mut().zip(gs.iter()) {
@@ -748,10 +749,10 @@ fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &Mod
         .unwrap()
         .add(&gv_flat.dot(&p.v.dequant).unwrap())
         .unwrap();
-    let g_h_in = g_h_mid
+    
+    g_h_mid
         .add(&rmsnorm_backward(&s.h_in, &p.attn_norm_w, &g_block1, &s.inv_rms1))
-        .unwrap();
-    g_h_in
+        .unwrap()
 }
 
 /// Student forward: embedding → layers → final norm → head. Mirrors

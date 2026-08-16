@@ -35,8 +35,8 @@ pub fn f32_add_scalar(a: &[f32], scalar: f32, out: &mut [f32]) {
 }
 
 pub fn f32_add_scalar_inplace(a: &mut [f32], scalar: f32) {
-    for i in 0..a.len() {
-        a[i] += scalar;
+    for v in a.iter_mut() {
+        *v += scalar;
     }
 }
 
@@ -69,14 +69,14 @@ pub fn f32_exp(a: &[f32], out: &mut [f32]) {
 }
 
 pub fn f32_exp_inplace(a: &mut [f32]) {
-    for i in 0..a.len() {
-        a[i] = a[i].exp();
+    for v in a.iter_mut() {
+        *v = v.exp();
     }
 }
 
 pub fn f32_scale_inplace(a: &mut [f32], scale: f32) {
-    for i in 0..a.len() {
-        a[i] *= scale;
+    for v in a.iter_mut() {
+        *v *= scale;
     }
 }
 
@@ -104,7 +104,7 @@ pub fn f32_gelu(a: &[f32], out: &mut [f32]) {
 /// Tanh-approximated GELU (GPT-2 `gelu_new` / Gemma `gelu_pytorch_tanh`):
 /// `0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))`.
 pub fn f32_gelu_tanh(a: &[f32], out: &mut [f32]) {
-    const C: f32 = 0.7978845608028654; // sqrt(2/pi)
+    const C: f32 = 0.797_884_6; // sqrt(2/pi)
     for i in 0..a.len() {
         let x = a[i];
         out[i] = 0.5 * x * (1.0 + (C * (x + 0.044715 * x * x * x)).tanh());
@@ -117,8 +117,8 @@ fn erf(x: f32) -> f32 {
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let t = 1.0 / (1.0 + 0.3275911 * x.abs());
     let y = 1.0
-        - (((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t
-            + 0.254829592)
+        - (((((1.061_405_4 * t - 1.453_152_1) * t + 1.421_413_8) * t - 0.284_496_72) * t
+            + 0.254_829_6)
             * t)
             * (-x * x).exp();
     sign * y
@@ -195,7 +195,7 @@ pub fn i8_dot_product(a: &[u8], b: &[u8], len: usize) -> i32 {
 }
 
 pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usize) {
-    let n_bytes = (n_bits + 7) / 8;
+    let n_bytes = n_bits.div_ceil(8);
     assert_eq!(a.len(), n_bytes);
     assert_eq!(b.len(), n_bytes);
     assert_eq!(popcounts.len(), n_bytes);

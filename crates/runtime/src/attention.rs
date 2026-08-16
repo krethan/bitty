@@ -553,12 +553,12 @@ fn scaled_dot_product_attention(
 
             let mut max_val: f32 = f32::NEG_INFINITY;
 
-            for t in 0..attn_len {
+            for (t, s) in scores.iter_mut().enumerate().take(attn_len) {
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = scale_softcap(dot * attn_scale, softcap);
-                scores[t] = score;
+                *s = score;
                 if score > max_val {
                     max_val = score;
                 }
@@ -598,6 +598,7 @@ fn scale_softcap(score: f32, softcap: f32) -> f32 {
 ///
 /// Delegates to the scratch-buffer [`scaled_dot_product_attention`] used by
 /// inference so recorded activations are bit-identical to the teacher's.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn scaled_dot_product_attention_owned(
     q: &Tensor,
     k: &Tensor,
@@ -686,12 +687,12 @@ pub(crate) fn scaled_dot_product_attention_batched(
             };
 
             let mut max_val: f32 = f32::NEG_INFINITY;
-            for t in 0..window_len {
+            for (t, s) in scores.iter_mut().enumerate().take(window_len) {
                 let pos_k = kv_start + t;
                 let k_row = &k_slice[head_base + pos_k * head_dim..][..head_dim];
                 let dot = simd::f32_dot(q_row, k_row);
                 let score = scale_softcap(dot * attn_scale, softcap);
-                scores[t] = score;
+                *s = score;
                 if score > max_val {
                     max_val = score;
                 }

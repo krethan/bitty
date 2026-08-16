@@ -101,6 +101,7 @@ struct TrainResult {
     fp32_bytes: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn train_readout(
     rank: usize,
     init_scale: f32,

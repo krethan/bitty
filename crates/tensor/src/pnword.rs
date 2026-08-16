@@ -36,8 +36,8 @@ impl PNActivation256 {
         let mut zero_run = 0u32;
         let mut trailing_zeros = true;
         let len = values.len().min(128);
-        for i in 0..len {
-            let val = values[i];
+        for (i, val) in values.iter().enumerate().take(len) {
+            let val = *val;
             let word_idx = i / 32;
             let trit_idx = i % 32;
             if val != 0 {
@@ -62,17 +62,17 @@ impl PNActivation256 {
 
     pub fn unpack(&self, out: &mut [i8]) {
         let len = out.len().min(128);
-        for i in 0..len {
+        for (i, o) in out.iter_mut().enumerate().take(len) {
             let word_idx = i / 32;
             let trit_idx = i % 32;
             let pos_bit = (self.trits[word_idx] >> (trit_idx * 2)) & 1;
             let neg_bit = (self.trits[word_idx] >> (trit_idx * 2 + 1)) & 1;
             if pos_bit == 1 {
-                out[i] = 1;
+                *o = 1;
             } else if neg_bit == 1 {
-                out[i] = -1;
+                *o = -1;
             } else {
-                out[i] = 0;
+                *o = 0;
             }
         }
     }
@@ -114,8 +114,8 @@ impl PNActivation256 {
             unsafe { self.xor_avx2(other) }
         } else {
             let mut result_trits = [0u64; 4];
-            for i in 0..4 {
-                result_trits[i] = self.trits[i] ^ other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] ^ other.trits[i];
             }
             Self {
                 trits: result_trits,
@@ -132,8 +132,8 @@ impl PNActivation256 {
             unsafe { self.and_avx2(other) }
         } else {
             let mut result_trits = [0u64; 4];
-            for i in 0..4 {
-                result_trits[i] = self.trits[i] & other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] & other.trits[i];
             }
             Self {
                 trits: result_trits,
@@ -188,8 +188,8 @@ impl PNWeight256 {
     pub fn pack(values: &[i8], scale: f32) -> Self {
         let mut trits = [0u64; 4];
         let len = values.len().min(128);
-        for i in 0..len {
-            let val = values[i];
+        for (i, val) in values.iter().enumerate().take(len) {
+            let val = *val;
             let word_idx = i / 32;
             let trit_idx = i % 32;
             if val > 0 {
@@ -207,8 +207,8 @@ impl PNWeight256 {
             unsafe { self.xor_avx2(other) }
         } else {
             let mut result_trits = [0u64; 4];
-            for i in 0..4 {
-                result_trits[i] = self.trits[i] ^ other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] ^ other.trits[i];
             }
             Self {
                 trits: result_trits,
@@ -224,8 +224,8 @@ impl PNWeight256 {
             unsafe { self.and_avx2(other) }
         } else {
             let mut result_trits = [0u64; 4];
-            for i in 0..4 {
-                result_trits[i] = self.trits[i] & other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] & other.trits[i];
             }
             Self {
                 trits: result_trits,
@@ -276,8 +276,8 @@ impl PNActivation512 {
         let mut zero_run = 0u32;
         let mut trailing_zeros = true;
         let len = values.len().min(256);
-        for i in 0..len {
-            let val = values[i];
+        for (i, val) in values.iter().enumerate().take(len) {
+            let val = *val;
             let word_idx = i / 32;
             let trit_idx = i % 32;
             if val != 0 {
@@ -311,8 +311,8 @@ impl PNActivation512 {
             unsafe { self.xor_avx512(other) }
         } else {
             let mut result_trits = [0u64; 8];
-            for i in 0..8 {
-                result_trits[i] = self.trits[i] ^ other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] ^ other.trits[i];
             }
             Self {
                 trits: result_trits,
@@ -330,8 +330,8 @@ impl PNActivation512 {
             unsafe { self.and_avx512(other) }
         } else {
             let mut result_trits = [0u64; 8];
-            for i in 0..8 {
-                result_trits[i] = self.trits[i] & other.trits[i];
+            for (i, r) in result_trits.iter_mut().enumerate() {
+                *r = self.trits[i] & other.trits[i];
             }
             Self {
                 trits: result_trits,

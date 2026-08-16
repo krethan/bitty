@@ -276,7 +276,7 @@ pub fn bench_memory() -> Vec<MemoryRow> {
             echo_ppl: window_echo,
             recall_at_1: 0.0,
             memory_bytes: 0,
-            dense_bytes: dense_bytes as usize,
+            dense_bytes,
             compression_ratio: 1.0,
         },
         MemoryRow {
@@ -285,7 +285,7 @@ pub fn bench_memory() -> Vec<MemoryRow> {
             echo_ppl: mem_echo,
             recall_at_1: recall,
             memory_bytes: mem_bytes,
-            dense_bytes: dense_bytes as usize,
+            dense_bytes,
             compression_ratio: compression,
         },
     ]

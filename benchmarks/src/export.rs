@@ -168,6 +168,7 @@ pub fn git_commit_hash() -> Option<String> {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_export(
     machine: MachineInfo,
     timestamp: String,

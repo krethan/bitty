@@ -144,7 +144,7 @@ impl SparseAttention {
 
             let narrowed = SparseAttention {
                 threshold: self.threshold + (1.0 - self.threshold) * 0.3,
-                max_attend: (result.num_active + 1) / 2,
+                max_attend: result.num_active.div_ceil(2),
                 temperature: self.temperature * 0.8,
             };
 
