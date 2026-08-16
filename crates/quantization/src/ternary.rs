@@ -60,16 +60,28 @@ pub fn quantize_grouped_with_outliers(
 
     let mut data = vec![0u8; n.div_ceil(8)];
 
-    for i in 0..n {
-        let col = i % k;
-        let g = if group_size == 0 { 0 } else { col / group_size };
-        let scale = scales[g];
+    // Fast path: direct slice access avoids per-element dispatch in
+    // get_flat_f32 (dtype match + byte-by-byte read). For non-grouped
+    // (single-scale) quantization, this is straightforward: scale the value
+    // and set the sign bit. Grouped quantization needs per-column grouping.
+    let src_slice = src.as_f32_slice();
+    if group_size == 0 {
+        let scale = scales[0];
         let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
-        let v = src.get_flat_f32(i) * inv_scale;
-        if v > 0.0 {
-            let byte = i / 8;
-            let bit = i % 8;
-            data[byte] |= 1 << bit;
+        for (i, &v) in src_slice.iter().enumerate() {
+            if v * inv_scale > 0.0 {
+                data[i / 8] |= 1 << (i % 8);
+            }
+        }
+    } else {
+        for i in 0..n {
+            let col = i % k;
+            let g = col / group_size;
+            let scale = scales[g];
+            let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
+            if src_slice[i] * inv_scale > 0.0 {
+                data[i / 8] |= 1 << (i % 8);
+            }
         }
     }
 
@@ -127,22 +139,32 @@ pub fn ternary_dequantize(qtensor: &QuantizedTensor) -> Tensor {
         1
     };
     let mut result = Tensor::new(&qtensor.shape, bitllm_tensor::DType::F32);
+    let out_slice = result.as_f32_slice_mut();
 
-    for i in 0..n {
-        let g = if qtensor.config.group_size == 0 {
-            0
-        } else {
-            (i % k) / qtensor.config.group_size
-        };
-        let scale = qtensor.scales[g];
-        let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
-        let val = if bit == 1 { 1.0 } else { -1.0 };
-        result.set_flat_f32(i, val * scale);
+    // Fast path: write directly to the f32 output slice. Per-element dispatch
+    // through set_flat_f32 was a major bottleneck (dtype match + byte-by-byte
+    // write); with the F32 dtype pinned, the direct slice avoids both.
+    if qtensor.config.group_size == 0 {
+        let scale = qtensor.scales[0];
+        let neg_scale = -scale;
+        for i in 0..n {
+            let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
+            out_slice[i] = if bit == 1 { scale } else { neg_scale };
+        }
+    } else {
+        let group_size = qtensor.config.group_size;
+        for i in 0..n {
+            let col = i % k;
+            let g = col / group_size;
+            let scale = qtensor.scales[g];
+            let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
+            out_slice[i] = if bit == 1 { scale } else { -scale };
+        }
     }
 
     if let Some(ref outliers) = qtensor.outliers {
         for (&idx, &value) in outliers.indices.iter().zip(outliers.values.iter()) {
-            result.set_flat_f32(idx as usize, value);
+            out_slice[idx as usize] = value;
         }
     }
 
