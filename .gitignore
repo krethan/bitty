@@ -4,3 +4,7 @@
 # Python
 __pycache__/
 *.py[cod]
+
+# Decoupled hip_tern builds its own workspace artifacts
+/crates/hip_tern/target/
+/crates/hip_tern/Cargo.lock

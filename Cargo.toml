@@ -8,11 +8,15 @@ members = [
     "crates/server",
     "crates/distributed",
     "crates/rocm",
-    "crates/hip_tern",
     "crates/cognition",
     "crates/train",
     "benchmarks",
 ]
+
+# hip_tern (AMD RDNA3 HIP ternary-attention kernel) is kept in the repo but
+# decoupled from the default workspace build until a HIP toolchain is present.
+# Build it standalone: cargo build --manifest-path crates/hip_tern/Cargo.toml --features hip
+exclude = ["crates/hip_tern"]
 
 [workspace.package]
 version = "0.1.0"

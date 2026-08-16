@@ -33,7 +33,7 @@ cargo test --workspace
 
 ## Architecture
 
-BitLLM is organized as a Rust workspace with 10 crates:
+BitLLM is organized as a Rust workspace with 9 crates:
 
 | Crate | Purpose | Status |
 |---|---|---|
@@ -44,9 +44,12 @@ BitLLM is organized as a Rust workspace with 10 crates:
 | `bitllm-server` | OpenAI-compatible REST API server | active |
 | `bitllm-distributed` | Tensor parallelism and multi-device support | active |
 | `bitllm-train` | Ternary LoRA training (block-coordinate descent, 2-bit packed) | active |
-| `bitllm-rocm` | ROCm GPU abstractions | experimental, not wired |
-| `hip_tern` | AMD RDNA3 ternary attention kernel (Project Mercurial) | experimental, not wired |
-| `bitllm-cognition` | Hyperdimensional computing primitives | experimental, not wired |
+| `bitllm-rocm` | ROCm GPU abstractions | experimental, `gpu` feature of `bitllm-runtime` |
+| `bitllm-cognition` | Hyperdimensional computing primitives (far-context memory) | experimental, used by the benchmark harness |
+
+The AMD RDNA3 ternary-attention kernel (`kernels/hip_tern/`, `crates/hip_tern/`) is
+kept in the repo but decoupled from the workspace build until a HIP toolchain is
+available.
 
 ## Quantization
 

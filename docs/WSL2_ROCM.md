@@ -52,13 +52,17 @@ This guide covers setting up AMD ROCm for the RX 7600 (gfx1102, Navi 33) in WSL2
 
 ## Building with ROCm Support
 
-```bash
-# Build with ROCm feature enabled
-cargo build --features rocm
+The `bitllm-rocm` crate is a CPU stub by default; the runtime pulls it in via the
+`gpu` feature, and the real HIP kernels only compile when the `rocm` feature of
+`bitllm-rocm` is enabled on a host with ROCm installed.
 
-# Build hip_tern kernel for RX 7600 (gfx1102)
-# The build script auto-detects WSL2 and targets gfx1102
-cargo build --features hip
+```bash
+# Runtime with the GPU backend wired in (CPU-stub kernels unless ROCm is present)
+cargo build -p bitllm-runtime --features gpu
+
+# hip_tern kernel for RX 7600 (gfx1102) — decoupled from the workspace,
+# so it must be built via its own manifest (auto-detects WSL2 and targets gfx1102)
+cargo build --manifest-path crates/hip_tern/Cargo.toml --features hip
 ```
 
 ## Running
@@ -67,8 +71,8 @@ cargo build --features hip
 # Set ROCM_PATH if ROCm is in a non-standard location
 export ROCM_PATH=/opt/rocm
 
-# Run the server with GPU acceleration
-cargo run --features rocm -- --gpu
+# Run the server with GPU acceleration (falls back to CPU if ROCm is unavailable)
+cargo run -p bitllm-server -- --gpu
 ```
 
 ## Troubleshooting
