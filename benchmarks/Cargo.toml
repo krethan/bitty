@@ -28,4 +28,4 @@ clap = { workspace = true }
 
 [features]
 default = []
-rocm = ["bitllm-rocm"]
+rocm = ["dep:bitllm-rocm", "bitllm-rocm/rocm"]

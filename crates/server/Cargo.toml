@@ -32,3 +32,8 @@ bitllm-tokenizer = { path = "../tokenizer" }
 bitllm-tensor = { path = "../tensor" }
 bitllm-rocm = { path = "../rocm" }
 rayon.workspace = true
+
+[features]
+default = []
+# Same caveats as bitllm-runtime's `gpu` feature: requires a ROCm toolchain.
+gpu = ["bitllm-runtime/gpu"]

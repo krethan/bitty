@@ -6,7 +6,9 @@ license.workspace = true
 
 [features]
 default = []
-gpu = ["dep:bitllm-rocm"]
+# Enables the real ROCm backend (HIP kernels). Requires a ROCm toolchain
+# (hipcc) on the build host; without one this feature will not compile.
+gpu = ["dep:bitllm-rocm", "bitllm-rocm/rocm"]
 
 [dependencies]
 anyhow.workspace = true

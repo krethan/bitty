@@ -165,10 +165,11 @@ mod tests {
     use crate::model::Model;
 
     /// GPU backend testing is hardware-gated: these tests exercise real HIP
-    /// kernels when run on a ROCm machine (`cargo test --features
-    /// bitllm-runtime/gpu,bitllm-rocm/rocm` on a host with a GPU driver) and
-    /// skip cleanly everywhere else. Run the ops through the high-level
-    /// `GpuContext` wrappers and compare against the CPU implementations.
+    /// kernels when run on a ROCm machine (`cargo test -p bitllm-runtime
+    /// --features gpu` on a host with a GPU driver; the `gpu` feature forwards
+    /// `bitllm-rocm/rocm`) and skip cleanly everywhere else. Run the ops
+    /// through the high-level `GpuContext` wrappers and compare against the
+    /// CPU implementations.
     fn require_gpu() -> Option<GpuContext> {
         if !GpuContext::is_available() {
             eprintln!("skipping GPU tests: no ROCm device available");
