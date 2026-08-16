@@ -300,8 +300,8 @@ mod tests {
 
     fn make_activation(active_count: usize) -> PNActivation256 {
         let mut vals = [0i8; 128];
-        for i in 0..active_count.min(128) {
-            vals[i] = if i % 2 == 0 { 1 } else { -1 };
+        for (i, v) in vals.iter_mut().enumerate().take(active_count.min(128)) {
+            *v = if i % 2 == 0 { 1 } else { -1 };
         }
         PNActivation256::pack(&vals)
     }

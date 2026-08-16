@@ -361,7 +361,7 @@ mod tests {
         assert_eq!(config.num_heads, 14);
         assert_eq!(config.num_kv_heads(), 2);
 
-        let loader = crate::loader::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+        let loader = crate::loader::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
             .unwrap();
         let mut model = Model::new(config.clone());
         let stats = crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);

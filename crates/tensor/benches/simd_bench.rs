@@ -193,8 +193,8 @@ fn bench_pnword512_memory_bandwidth(c: &mut Criterion) {
             let dense_a: Vec<f32> = a_vals.iter().map(|&v| v as f32).collect();
             bench.iter(|| {
                 let mut sum = 0.0f32;
-                for i in 0..n {
-                    sum += black_box(dense_a[i]);
+                for &v in dense_a.iter() {
+                    sum += black_box(v);
                 }
                 black_box(sum);
             });

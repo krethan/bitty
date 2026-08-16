@@ -115,18 +115,18 @@ mod tests {
         let n = wq.shape[0];
         let w_scale = wq.scales[0];
         let mut out = vec![0.0f32; n];
-        for j in 0..n {
+        for (j, o) in out.iter_mut().enumerate() {
             let mut sum = 0.0f64;
-            for t in 0..k {
+            for (t, &xt) in x.iter().enumerate() {
                 let idx = j * k + t;
                 let w = if (wq.data[idx / 8] >> (idx % 8)) & 1 == 1 {
                     w_scale as f64
                 } else {
                     -w_scale as f64
                 };
-                sum += x[t] as f64 * w;
+                sum += xt as f64 * w;
             }
-            out[j] = sum as f32;
+            *o = sum as f32;
         }
         out
     }
@@ -139,13 +139,13 @@ mod tests {
         let out = lin.forward(&x);
 
         let expected = ref_bitlinear(x.as_f32_slice(), &lin.weight_q);
-        for j in 0..2 {
+        for (j, (&got, &exp)) in out.as_f32_slice().iter().zip(expected.iter()).enumerate() {
             assert!(
-                (out.as_f32_slice()[j] - expected[j]).abs() < 1e-3,
+                (got - exp).abs() < 1e-3,
                 "j={}: got {} expected {}",
                 j,
-                out.as_f32_slice()[j],
-                expected[j]
+                got,
+                exp
             );
         }
     }
@@ -189,12 +189,12 @@ mod tests {
         let lin = BitLinear::quantize(&w, &config);
         assert_eq!(lin.weight_q.scales.len(), 2);
 
-        let x = Tensor::from_slice(&vec![1.0f32; 16], &[1, 16]);
+        let x = Tensor::from_slice(&[1.0f32; 16], &[1, 16]);
 
         // Manual grouped reference.
         let gs = 8;
-        let mut expected = vec![0.0f32; 2];
-        for j in 0..2 {
+        let mut expected = [0.0f32; 2];
+        for (j, exp) in expected.iter_mut().enumerate() {
             let mut sum = 0.0f64;
             for t in 0..16 {
                 let idx = j * 16 + t;
@@ -204,7 +204,7 @@ mod tests {
                 let w = if bit == 1 { scale } else { -scale };
                 sum += 1.0f64 * w as f64;
             }
-            expected[j] = sum as f32;
+            *exp = sum as f32;
         }
 
         // Both the exact f32 path and the W1A8 path must reproduce it. With
@@ -213,15 +213,15 @@ mod tests {
         for a8 in [false, true] {
             let lin = BitLinear::quantize(&w, &config.clone().with_a8(a8));
             let out = lin.forward(&x);
-            for j in 0..2 {
-                let diff = (out.as_f32_slice()[j] - expected[j]).abs();
+            for (j, (&got, &exp)) in out.as_f32_slice().iter().zip(expected.iter()).enumerate() {
+                let diff = (got - exp).abs();
                 assert!(
                     diff < 1e-3,
                     "a8={}: j={}: got {} expected {}",
                     a8,
                     j,
-                    out.as_f32_slice()[j],
-                    expected[j]
+                    got,
+                    exp
                 );
             }
         }

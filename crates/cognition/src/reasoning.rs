@@ -170,6 +170,6 @@ mod tests {
         let similar_to_red = red.clone();
         root.learn_routed(similar_to_red, "dark_red");
 
-        assert!(root.subunits[0].len() >= 1);
+        assert!(!root.subunits[0].is_empty());
     }
 }

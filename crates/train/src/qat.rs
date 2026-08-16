@@ -1157,7 +1157,7 @@ mod tests {
     fn student_graph_matches_deployed_model() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
         let window: Vec<u32> = (0..16)
-            .map(|i| ((i * 11) % config.vocab_size as usize) as u32)
+            .map(|i| ((i * 11) % config.vocab_size) as u32)
             .collect();
 
         // Reference: quantize the model the way deploy does, then run it.
@@ -1185,7 +1185,7 @@ mod tests {
         let student = random_model(&config, 13);
 
         let window: Vec<u32> = (0..20)
-            .map(|i| ((i * 13) % config.vocab_size as usize) as u32)
+            .map(|i| ((i * 13) % config.vocab_size) as u32)
             .collect();
         teacher.clear_cache();
         let teacher_logits = teacher.forward(&window);
@@ -1247,7 +1247,7 @@ mod tests {
     fn end_to_end_qat_reduces_deployed_error() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
         let windows: Vec<Vec<u32>> = (0..4)
-            .map(|w| (0..24).map(|i| ((w * 40 + i * 7) % config.vocab_size as usize) as u32).collect())
+            .map(|w| (0..24).map(|i| ((w * 40 + i * 7) % config.vocab_size) as u32).collect())
             .collect();
         let eval_window = windows[0].clone();
 

@@ -265,7 +265,7 @@ mod tests {
         }
         let header_end = buf.len() as u64;
         let data_start = (header_end + 31) & !31;
-        buf.extend(std::iter::repeat(0u8).take((data_start - header_end) as usize));
+        buf.extend(std::iter::repeat_n(0u8, (data_start - header_end) as usize));
 
         for (_name, _dims, data) in tensors.iter().copied() {
             for &val in data {
@@ -359,12 +359,13 @@ mod tests {
         let n_heads = 2usize;
         let inner = 8usize;
         // torch row r -> interleaved row r_g, then restore torch order manually.
-        let mut perm = vec![0usize; n_heads * hd];
-        for r in 0..n_heads * hd {
-            let d_lo = r % (hd / 2);
-            let d_hi = (r / (hd / 2)) % 2;
-            perm[r] = hd * (r / hd) + 2 * d_lo + d_hi;
-        }
+        let perm: Vec<usize> = (0..n_heads * hd)
+            .map(|r| {
+                let d_lo = r % (hd / 2);
+                let d_hi = (r / (hd / 2)) % 2;
+                hd * (r / hd) + 2 * d_lo + d_hi
+            })
+            .collect();
         let src = q_interleaved.clone();
         for r in 0..n_heads * hd {
             for c in 0..inner {
@@ -398,7 +399,7 @@ mod tests {
         let config =
             bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
                 .unwrap();
         let mut model = Model::new(config.clone());
         let stats =
@@ -430,7 +431,7 @@ mod tests {
         let config =
             bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
                 .unwrap();
         let mut model = Model::new(config.clone());
         let stats =
@@ -456,7 +457,7 @@ mod tests {
         let config =
             bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
                 .unwrap();
         let mut model = Model::new(config.clone());
         let stats =
@@ -482,7 +483,7 @@ mod tests {
         let config =
             bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(&format!("{}/model.safetensors", dir))
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
                 .unwrap();
         let mut model = Model::new(config.clone());
         let stats =

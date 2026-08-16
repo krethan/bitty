@@ -249,8 +249,7 @@ mod tests {
 
         let scale = qt.scales[0];
 
-        for i in 0..8 {
-            let orig = data[i];
+        for (i, &orig) in data.iter().enumerate() {
             let recon = reconstructed.get_flat_f32(i);
             if orig > 0.0 {
                 assert!(recon > 0.0, "expected positive at {}: got {}", i, recon);
@@ -334,8 +333,8 @@ mod tests {
         // Non-outliers reconstruct to ±scale, where scale is the bulk absmax
         // (outliers excluded): max(0.5, 0.6, 0.1, 0.2, 0.3, 0.1) = 0.6.
         assert_eq!(qt.scales[0], 0.6);
-        for i in 0..6 {
-            let expected = if data[i] > 0.0 { 0.6 } else { -0.6 };
+        for (i, &d) in data.iter().enumerate().take(6) {
+            let expected = if d > 0.0 { 0.6 } else { -0.6 };
             assert_eq!(reconstructed.get_flat_f32(i), expected);
         }
     }
@@ -391,10 +390,9 @@ mod tests {
         assert!(qt.scales[0] > 5.0 * qt.scales[1], "group 0 should be much larger");
 
         let reconstructed = ternary_dequantize(&qt);
-        for i in 0..128 {
+        for (i, &orig) in data.iter().enumerate() {
             let col = i % 64;
             let g = col / 32;
-            let orig = data[i];
             let recon = reconstructed.get_flat_f32(i);
             if orig > 0.0 {
                 assert!(recon > 0.0, "expected positive at {}: got {}", i, recon);

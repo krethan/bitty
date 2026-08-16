@@ -974,8 +974,10 @@ mod tests {
         vocab.insert("hello".to_string(), 103);
         vocab.insert("world".to_string(), 104);
         let merges = vec![];
-        let mut config = TokenizerConfig::default();
-        config.byte_level = true;
+        let config = TokenizerConfig {
+            byte_level: true,
+            ..Default::default()
+        };
         let tok = BpeTokenizer::from_vocab_and_merges_with_config(vocab, merges, config);
 
         let encoded = tok.encode("hello world");

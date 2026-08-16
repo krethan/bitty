@@ -64,8 +64,8 @@ fn bench_bitlinear(c: &mut Criterion) {
 }
 
 fn bench_xnor_kernel(c: &mut Criterion) {
-    for &size in &[64, 256, 1024] {
-        let n_packed = (size + 3) / 4;
+    for &size in &[64usize, 256, 1024] {
+        let n_packed = size.div_ceil(4);
         let a: Vec<u8> = (0..n_packed).map(|i| (i * 7 + 3) as u8).collect();
         let b: Vec<u8> = (0..n_packed).map(|i| (i * 11 + 5) as u8).collect();
         let mut out = vec![0u8; n_packed];
@@ -87,7 +87,7 @@ fn bench_memory_footprint(c: &mut Criterion) {
         let bl = BitLinear::quantize(&w_fp32, &QuantConfig::ternary());
 
         let fp32_bytes = size * size * 4;
-        let ternary_bytes = (size * size + 3) / 4;
+        let ternary_bytes = (size * size).div_ceil(4);
         let input = Tensor::from_slice(&vec![0.5f32; size], &[1, size]);
         let w_t = w_fp32.transpose();
 
@@ -140,8 +140,8 @@ fn bench_scheduler_throughput(c: &mut Criterion) {
         let weight = PNWeight256::pack(&w_vals, 1.0);
 
         let mut a_vals = [0i8; 128];
-        for i in 0..32 {
-            a_vals[i] = 1;
+        for v in a_vals.iter_mut().take(32) {
+            *v = 1;
         }
         let activation = PNActivation256::pack(&a_vals);
 

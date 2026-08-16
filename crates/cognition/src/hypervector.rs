@@ -290,10 +290,10 @@ mod tests {
         let a = HyperVector::from_bits(&[true, false, true, false]);
         let b = HyperVector::from_bits(&[true, true, false, false]);
         let x = a.xor(&b);
-        assert_eq!(x.get_bit(0), false);
-        assert_eq!(x.get_bit(1), true);
-        assert_eq!(x.get_bit(2), true);
-        assert_eq!(x.get_bit(3), false);
+        assert!(!x.get_bit(0));
+        assert!(x.get_bit(1));
+        assert!(x.get_bit(2));
+        assert!(!x.get_bit(3));
     }
 
     #[test]
@@ -301,30 +301,30 @@ mod tests {
         let a = HyperVector::from_bits(&[true, false, true, false]);
         let b = HyperVector::from_bits(&[true, true, false, false]);
         let x = a.xnor(&b);
-        assert_eq!(x.get_bit(0), true);
-        assert_eq!(x.get_bit(1), false);
-        assert_eq!(x.get_bit(2), false);
-        assert_eq!(x.get_bit(3), true);
+        assert!(x.get_bit(0));
+        assert!(!x.get_bit(1));
+        assert!(!x.get_bit(2));
+        assert!(x.get_bit(3));
     }
 
     #[test]
     fn test_permute() {
         let a = HyperVector::from_bits(&[false, true, false, false]);
         let p = a.permute(1);
-        assert_eq!(p.get_bit(0), false);
-        assert_eq!(p.get_bit(1), false);
-        assert_eq!(p.get_bit(2), true);
-        assert_eq!(p.get_bit(3), false);
+        assert!(!p.get_bit(0));
+        assert!(!p.get_bit(1));
+        assert!(p.get_bit(2));
+        assert!(!p.get_bit(3));
     }
 
     #[test]
     fn test_not() {
         let a = HyperVector::from_bits(&[true, false, true, false]);
         let n = a.not();
-        assert_eq!(n.get_bit(0), false);
-        assert_eq!(n.get_bit(1), true);
-        assert_eq!(n.get_bit(2), false);
-        assert_eq!(n.get_bit(3), true);
+        assert!(!n.get_bit(0));
+        assert!(n.get_bit(1));
+        assert!(!n.get_bit(2));
+        assert!(n.get_bit(3));
     }
 
     #[test]

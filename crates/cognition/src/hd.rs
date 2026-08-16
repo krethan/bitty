@@ -132,13 +132,13 @@ mod tests {
         let c = HyperVector::from_bits(&[false, true, false, true]);
         let result = bundle(&[&a, &b, &c]);
         // a[0]=T, b[0]=T, c[0]=F -> majority T
-        assert_eq!(result.get_bit(0), true);
+        assert!(result.get_bit(0));
         // a[1]=T, b[1]=F, c[1]=T -> majority T
-        assert_eq!(result.get_bit(1), true);
+        assert!(result.get_bit(1));
         // a[2]=F, b[2]=T, c[2]=F -> majority F
-        assert_eq!(result.get_bit(2), false);
+        assert!(!result.get_bit(2));
         // a[3]=F, b[3]=F, c[3]=T -> majority F
-        assert_eq!(result.get_bit(3), false);
+        assert!(!result.get_bit(3));
     }
 
     #[test]
@@ -154,9 +154,9 @@ mod tests {
     fn test_permute_cyclic() {
         let a = HyperVector::from_bits(&[true, false, false, false]);
         let p1 = permute(&a, 1);
-        assert_eq!(p1.get_bit(1), true);
+        assert!(p1.get_bit(1));
         let p2 = permute(&p1, 3);
-        assert_eq!(p2.get_bit(0), true);
+        assert!(p2.get_bit(0));
     }
 
     #[test]

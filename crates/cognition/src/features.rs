@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_encode_batch() {
         let extractor = FeatureExtractor::new(8, 16);
-        let embeddings = vec![vec![0.1; 8], vec![0.2; 8], vec![0.3; 8]];
+        let embeddings = [vec![0.1; 8], vec![0.2; 8], vec![0.3; 8]];
         let refs: Vec<&[f32]> = embeddings.iter().map(|v| v.as_slice()).collect();
         let result = extractor.encode_batch(&refs);
         assert_eq!(result.len(), 3);

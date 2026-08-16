@@ -83,7 +83,7 @@ mod tests {
         let mut has_nonzero = false;
         for i in 0..100 {
             let v = t.get_flat_f32(i);
-            assert!(v >= -1.0 && v <= 1.0);
+            assert!((-1.0..=1.0).contains(&v));
             if v != 0.0 {
                 has_nonzero = true;
             }
@@ -134,8 +134,8 @@ mod tests {
         let data = [1.5f32, -2.5, 0.0, 100.0];
         let t = Tensor::from_slice(&data, &[4]);
         let result = t.to_f32();
-        for i in 0..4 {
-            assert_eq!(result.get_flat_f32(i), data[i]);
+        for (i, &x) in data.iter().enumerate() {
+            assert_eq!(result.get_flat_f32(i), x);
         }
     }
 
@@ -145,8 +145,8 @@ mod tests {
         let t = Tensor::from_slice(&data, &[4]);
         let result = t.to_bit1();
         assert_eq!(result.dtype(), DType::BIT1);
-        for i in 0..4 {
-            assert_eq!(result.get_flat_f32(i), data[i]);
+        for (i, &x) in data.iter().enumerate() {
+            assert_eq!(result.get_flat_f32(i), x);
         }
     }
 
@@ -155,8 +155,8 @@ mod tests {
         let data = [0.5f32, -0.5, 0.1, -0.9, 0.01, -0.01, 1.0, -1.0];
         let t = Tensor::from_slice(&data, &[8]);
         let result = t.to_bit1();
-        for i in 0..8 {
-            let expected = if data[i] > 0.0 { 1.0 } else { -1.0 };
+        for (i, &x) in data.iter().enumerate() {
+            let expected = if x > 0.0 { 1.0 } else { -1.0 };
             assert_eq!(result.get_flat_f32(i), expected);
         }
     }
@@ -308,8 +308,8 @@ mod tests {
         let t = Tensor::from_slice(&data, &[5]);
         let result = t.to_bit1();
         assert_eq!(result.num_elements(), 5);
-        for i in 0..5 {
-            assert_eq!(result.get_flat_f32(i), data[i]);
+        for (i, &x) in data.iter().enumerate() {
+            assert_eq!(result.get_flat_f32(i), x);
         }
     }
 
@@ -354,12 +354,12 @@ mod tests {
         let b: Vec<f32> = (0..100).map(|i| i as f32 * 2.0).collect();
         let mut out = vec![0.0f32; 100];
         simd::f32_add(&a, &b, &mut out);
-        for i in 0..100 {
+        for (i, &o) in out.iter().enumerate() {
             assert!(
-                (out[i] - (i as f32 * 3.0)).abs() < 1e-5,
+                (o - (i as f32 * 3.0)).abs() < 1e-5,
                 "f32_add failed at {}: got {} expected {}",
                 i,
-                out[i],
+                o,
                 i as f32 * 3.0
             );
         }
@@ -371,9 +371,9 @@ mod tests {
         let b: Vec<f32> = (0..100).map(|i| i as f32).collect();
         let mut out = vec![0.0f32; 100];
         simd::f32_sub(&a, &b, &mut out);
-        for i in 0..100 {
+        for (i, &o) in out.iter().enumerate() {
             assert!(
-                (out[i] - (i as f32 * 2.0)).abs() < 1e-5,
+                (o - (i as f32 * 2.0)).abs() < 1e-5,
                 "f32_sub failed at {}",
                 i
             );
@@ -386,9 +386,9 @@ mod tests {
         let b: Vec<f32> = (0..100).map(|i| i as f32 + 1.0).collect();
         let mut out = vec![0.0f32; 100];
         simd::f32_mul(&a, &b, &mut out);
-        for i in 0..100 {
+        for (i, &o) in out.iter().enumerate() {
             assert!(
-                (out[i] - (i as f32 * (i as f32 + 1.0))).abs() < 1e-3,
+                (o - (i as f32 * (i as f32 + 1.0))).abs() < 1e-3,
                 "f32_mul failed at {}",
                 i
             );
@@ -437,9 +437,9 @@ mod tests {
         let a: Vec<f32> = (0..128).map(|i| i as f32).collect();
         let mut out = vec![0.0f32; 128];
         simd::f32_scale(&a, 2.5, &mut out);
-        for i in 0..128 {
+        for (i, &o) in out.iter().enumerate() {
             assert!(
-                (out[i] - (i as f32 * 2.5)).abs() < 1e-4,
+                (o - (i as f32 * 2.5)).abs() < 1e-4,
                 "f32_scale failed at {}",
                 i
             );

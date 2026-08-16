@@ -842,7 +842,7 @@ mod tests {
         let header_end = buf.len() as u64;
         let data_start = align_offset(header_end, alignment);
         let padding = (data_start - header_end) as usize;
-        buf.extend(std::iter::repeat(0u8).take(padding));
+        buf.extend(std::iter::repeat_n(0u8, padding));
 
         for (_name, data) in &f32_tensors {
             for val in data {
