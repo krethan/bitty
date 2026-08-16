@@ -137,7 +137,10 @@ mod tests {
 
         let result = router.route_hard(&query);
         assert!(result.is_some());
-        assert_eq!(router.get_pathway(result.unwrap().0).unwrap().label, "close");
+        assert_eq!(
+            router.get_pathway(result.unwrap().0).unwrap().label,
+            "close"
+        );
     }
 
     #[test]

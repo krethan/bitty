@@ -6,9 +6,11 @@ use bitllm_tensor::simd;
 use bitllm_tensor::{DType, Tensor};
 
 #[cfg(feature = "rocm")]
-use bitllm_rocm::{GpuOps, GpuBuffer};
+use bitllm_rocm::{GpuBuffer, GpuOps};
 
-use crate::helpers::{auto_iters, print_compute_raw, print_throughput_raw, time_iters, BenchmarkResult};
+use crate::helpers::{
+    auto_iters, print_compute_raw, print_throughput_raw, time_iters, BenchmarkResult,
+};
 
 fn bench_f32_matmul(size: usize, iterations: usize) -> BenchmarkResult {
     let a = Tensor::random(&[size, size], DType::F32);
@@ -77,28 +79,41 @@ fn bench_gpu_bit1_matmul(size: usize, iterations: usize) -> BenchmarkResult {
         )
     };
 
-    let a_gpu = GpuBuffer::from_host(a_bytes)
-        .expect("GPU alloc for input");
-    let w_gpu = GpuBuffer::from_host(w_bytes)
-        .expect("GPU alloc for weight");
-    let scales_gpu = GpuBuffer::new(b_q.scales.len() * 4)
-        .expect("GPU alloc for scales");
-    scales_gpu.copy_from_host(scales_bytes)
-        .expect("H2D scales");
-    let out_gpu = GpuBuffer::new(size * size * 4)
-        .expect("GPU alloc for output");
+    let a_gpu = GpuBuffer::from_host(a_bytes).expect("GPU alloc for input");
+    let w_gpu = GpuBuffer::from_host(w_bytes).expect("GPU alloc for weight");
+    let scales_gpu = GpuBuffer::new(b_q.scales.len() * 4).expect("GPU alloc for scales");
+    scales_gpu.copy_from_host(scales_bytes).expect("H2D scales");
+    let out_gpu = GpuBuffer::new(size * size * 4).expect("GPU alloc for output");
 
     // Warmup
     GpuOps::bit1_matmul(
-        &a_gpu, &w_gpu, &scales_gpu, &out_gpu,
-        size, size, size, 0, None, None,
-    ).expect("GPU matmul warmup");
+        &a_gpu,
+        &w_gpu,
+        &scales_gpu,
+        &out_gpu,
+        size,
+        size,
+        size,
+        0,
+        None,
+        None,
+    )
+    .expect("GPU matmul warmup");
 
     time_iters(iterations, || {
         GpuOps::bit1_matmul(
-            &a_gpu, &w_gpu, &scales_gpu, &out_gpu,
-            size, size, size, 0, None, None,
-        ).expect("GPU matmul");
+            &a_gpu,
+            &w_gpu,
+            &scales_gpu,
+            &out_gpu,
+            size,
+            size,
+            size,
+            0,
+            None,
+            None,
+        )
+        .expect("GPU matmul");
     })
 }
 
@@ -146,11 +161,7 @@ pub fn bench_matmul_suite() {
         #[cfg(feature = "rocm")]
         {
             let avg = bench_gpu_bit1_matmul(size, iters).mean;
-            print_throughput_raw(
-                &format!("GPU bit1_matmul ({})", size),
-                n / 8 + 4,
-                avg,
-            );
+            print_throughput_raw(&format!("GPU bit1_matmul ({})", size), n / 8 + 4, avg);
         }
 
         println!();
@@ -185,11 +196,7 @@ pub fn bench_matmul_suite() {
         #[cfg(feature = "rocm")]
         {
             let avg = bench_gpu_bit1_matmul(size, iters).mean;
-            print_throughput_raw(
-                &format!("GPU bit1_matmul ({})", size),
-                n / 8 + 4,
-                avg,
-            );
+            print_throughput_raw(&format!("GPU bit1_matmul ({})", size), n / 8 + 4, avg);
         }
 
         println!();

@@ -334,7 +334,18 @@ impl GpuOps {
         }
         #[cfg(not(feature = "rocm"))]
         {
-            let _ = (a, w, scales, out, m, n, k, group_size, outlier_mask, outlier_vals);
+            let _ = (
+                a,
+                w,
+                scales,
+                out,
+                m,
+                n,
+                k,
+                group_size,
+                outlier_mask,
+                outlier_vals,
+            );
             Err(RocmError::NotAvailable)
         }
     }

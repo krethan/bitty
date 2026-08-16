@@ -1,16 +1,24 @@
-use bitllm_runtime::gguf::{GgufLoader, to_torch_layout};
+use bitllm_runtime::gguf::{to_torch_layout, GgufLoader};
 
 fn dump(t: &bitllm_tensor::Tensor, label: &str, stride: usize) {
     let s = t.as_f32_slice();
     for r in 0..2 {
         let row = &s[r * stride..(r + 1) * stride];
         let maxa = row.iter().map(|x| x.abs()).fold(0.0f32, f32::max);
-        println!("{} row{} max_abs={:.6} first8={:?}", label, r, maxa, &row[..8]);
+        println!(
+            "{} row{} max_abs={:.6} first8={:?}",
+            label,
+            r,
+            maxa,
+            &row[..8]
+        );
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    let path = std::env::args().nth(1).expect("usage: dump_gguf <file.gguf>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: dump_gguf <file.gguf>");
     let loader = GgufLoader::load(&path)?;
     for name in loader.tensor_names() {
         let t = loader.load_tensor(name)?;
@@ -29,31 +37,59 @@ fn main() -> anyhow::Result<()> {
             }
             "blk.0.attn_q.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.attn_q torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.attn_q torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.attn_k.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.attn_k torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.attn_k torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.attn_v.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.attn_v torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.attn_v torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.attn_output.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.attn_output torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.attn_output torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.ffn_gate.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.ffn_gate torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.ffn_gate torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.ffn_up.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.ffn_up torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.ffn_up torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.ffn_down.weight" => {
                 let s = t2.as_f32_slice();
-                println!("blk0.ffn_down torch shape={:?} row0 first8={:?}", t2.shape(), &s[..8]);
+                println!(
+                    "blk0.ffn_down torch shape={:?} row0 first8={:?}",
+                    t2.shape(),
+                    &s[..8]
+                );
             }
             "blk.0.attn_norm.weight" => {
                 let s = t.as_f32_slice();

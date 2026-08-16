@@ -481,5 +481,4 @@ impl Tensor {
             std::slice::from_raw_parts_mut(self.data.as_mut_ptr() as *mut f32, self.data.len() / 4)
         }
     }
-
 }

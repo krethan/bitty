@@ -11,11 +11,7 @@ pub fn bundle(vectors: &[&HyperVector]) -> HyperVector {
     assert!(!vectors.is_empty(), "bundle requires at least one vector");
     let dims = vectors[0].dims();
     for v in &vectors[1..] {
-        assert_eq!(
-            v.dims(),
-            dims,
-            "dimension mismatch in bundle"
-        );
+        assert_eq!(v.dims(), dims, "dimension mismatch in bundle");
     }
 
     let words = dims.div_ceil(64);
@@ -72,7 +68,10 @@ pub fn permute(v: &HyperVector, shift: usize) -> HyperVector {
 /// For example, the sequence [A, B, C] becomes:
 ///   bundle(permute(A, 1), permute(B, 2), permute(C, 3))
 pub fn encode_sequence(sequence: &[&HyperVector]) -> HyperVector {
-    assert!(!sequence.is_empty(), "encode_sequence requires at least one item");
+    assert!(
+        !sequence.is_empty(),
+        "encode_sequence requires at least one item"
+    );
     let permuted: Vec<HyperVector> = sequence
         .iter()
         .enumerate()
@@ -122,7 +121,11 @@ mod tests {
         let v = HyperVector::random(256);
         let result = bundle(&[&v, &v, &v]);
         let sim = v.similarity(&result);
-        assert!(sim > 0.99, "bundle of identical vectors should be very similar: {}", sim);
+        assert!(
+            sim > 0.99,
+            "bundle of identical vectors should be very similar: {}",
+            sim
+        );
     }
 
     #[test]

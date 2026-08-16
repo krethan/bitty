@@ -38,8 +38,17 @@ impl FeatureExtractor {
     /// Create a feature extractor with a learned projection and bias.
     /// `weights` should be shape [output_dim, input_dim] flattened, values in [-1, 1]
     /// `bias_val` is optional per-output bias
-    pub fn with_weights(input_dim: usize, output_dim: usize, weights: &[f32], bias_val: Option<&[f32]>) -> Self {
-        assert_eq!(weights.len(), output_dim * input_dim, "weight matrix size mismatch");
+    pub fn with_weights(
+        input_dim: usize,
+        output_dim: usize,
+        weights: &[f32],
+        bias_val: Option<&[f32]>,
+    ) -> Self {
+        assert_eq!(
+            weights.len(),
+            output_dim * input_dim,
+            "weight matrix size mismatch"
+        );
         if let Some(b) = bias_val {
             assert_eq!(b.len(), output_dim, "bias size mismatch");
         }
@@ -121,7 +130,11 @@ mod tests {
         let hv_a = extractor.encode(&a);
         let hv_b = extractor.encode(&b);
         let sim = hv_a.similarity(&hv_b);
-        assert!(sim > 0.5, "similar inputs should have similar hypervectors: {}", sim);
+        assert!(
+            sim > 0.5,
+            "similar inputs should have similar hypervectors: {}",
+            sim
+        );
     }
 
     #[test]
@@ -132,7 +145,11 @@ mod tests {
         let hv_a = extractor.encode(&a);
         let hv_b = extractor.encode(&b);
         let sim = hv_a.similarity(&hv_b);
-        assert!(sim < 0.5, "opposite inputs should have different hypervectors: {}", sim);
+        assert!(
+            sim < 0.5,
+            "opposite inputs should have different hypervectors: {}",
+            sim
+        );
     }
 
     #[test]
@@ -149,9 +166,12 @@ mod tests {
     fn test_with_weights() {
         let input_dim = 4;
         let output_dim = 3;
-        let weights = vec![1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0];
+        let weights = vec![
+            1.0, -1.0, 1.0, -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0,
+        ];
         let bias = vec![0.0, 0.0, 0.0];
-        let extractor = FeatureExtractor::with_weights(input_dim, output_dim, &weights, Some(&bias));
+        let extractor =
+            FeatureExtractor::with_weights(input_dim, output_dim, &weights, Some(&bias));
         assert_eq!(extractor.output_dims(), 3);
         let emb = vec![0.5, -0.5, 0.5, -0.5];
         let hv = extractor.encode(&emb);

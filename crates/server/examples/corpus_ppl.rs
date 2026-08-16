@@ -55,7 +55,10 @@ fn resolve_source(model_arg: &str) -> Source {
     if model_arg.ends_with(".gguf") {
         let loader = GgufLoader::load(model_arg).expect("load gguf metadata");
         let config = loader.config_from_metadata().expect("gguf config");
-        Source::Gguf { path: model_arg.to_string(), config }
+        Source::Gguf {
+            path: model_arg.to_string(),
+            config,
+        }
     } else {
         let dir = PathBuf::from(model_arg);
         let json = std::fs::read_to_string(dir.join("config.json")).expect("config.json");
@@ -75,11 +78,7 @@ fn main() {
     let context: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(512);
     let stride: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(context);
     let max_tokens: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let threads: usize = args
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4)
-        .max(1);
+    let threads: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(4).max(1);
     let start_token: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
     let source = resolve_source(&model_arg);
@@ -95,7 +94,11 @@ fn main() {
     let t0 = std::time::Instant::now();
     eprintln!("[stage] tokenizing {} bytes...", corpus.len());
     let all_tokens = tokenizer.encode(&corpus);
-    eprintln!("[stage] tokenized {} tokens in {:.1}s", all_tokens.len(), t0.elapsed().as_secs_f32());
+    eprintln!(
+        "[stage] tokenized {} tokens in {:.1}s",
+        all_tokens.len(),
+        t0.elapsed().as_secs_f32()
+    );
     let tokens: &[u32] = if max_tokens > 0 || start_token > 0 {
         let end = if max_tokens > 0 {
             (start_token + max_tokens).min(all_tokens.len())
@@ -116,14 +119,23 @@ fn main() {
     let mut i = 0usize;
     while i + 1 < tokens.len() {
         let end = (i + context + 1).min(tokens.len());
-        let start = if i == 0 { 0 } else { context.saturating_sub(stride) };
+        let start = if i == 0 {
+            0
+        } else {
+            context.saturating_sub(stride)
+        };
         windows.push((i, end, start));
         if end == tokens.len() {
             break;
         }
         i += stride;
     }
-    eprintln!("[stage] {} windows, context={} stride={}", windows.len(), context, stride);
+    eprintln!(
+        "[stage] {} windows, context={} stride={}",
+        windows.len(),
+        context,
+        stride
+    );
 
     let started = std::time::Instant::now();
     let pool = rayon::ThreadPoolBuilder::new()

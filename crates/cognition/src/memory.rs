@@ -66,7 +66,12 @@ impl<T: Clone> SparseAssociativeMemory<T> {
             .collect()
     }
 
-    pub fn recall_best_n(&self, query: &HyperVector, max_results: usize, min_similarity: f32) -> Vec<(f32, &T)> {
+    pub fn recall_best_n(
+        &self,
+        query: &HyperVector,
+        max_results: usize,
+        min_similarity: f32,
+    ) -> Vec<(f32, &T)> {
         let mut items: Vec<_> = self
             .keys
             .iter()
@@ -172,9 +177,9 @@ mod tests {
 
         let close = query.clone();
         let mut far = query.clone();
-            for i in 0..65 {
-                far.flip_bit(i);
-            }
+        for i in 0..65 {
+            far.flip_bit(i);
+        }
 
         mem.store(close.clone(), "close");
         mem.store(far.clone(), "far");

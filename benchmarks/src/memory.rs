@@ -42,8 +42,14 @@ struct FormatSpec {
 }
 
 const FORMATS: &[FormatSpec] = &[
-    FormatSpec { name: "FP32", bytes_per_param: 4.0 },
-    FormatSpec { name: "FP16", bytes_per_param: 2.0 },
+    FormatSpec {
+        name: "FP32",
+        bytes_per_param: 4.0,
+    },
+    FormatSpec {
+        name: "FP16",
+        bytes_per_param: 2.0,
+    },
     FormatSpec {
         name: "Ternary (2-bit)",
         // 2 bits packed + per-row scale (4 bytes per row of 4096)
@@ -209,14 +215,8 @@ pub fn print_max_parameters() {
 
     let relevant: &[FormatSpec] = &FORMATS[1..]; // skip FP32
 
-    println!(
-        "  {:20}  {:>8}  {:>8}",
-        "GPU", "FP16", "Ternary"
-    );
-    println!(
-        "  {:20}  {:>8}  {:>8}",
-        "───", "────", "───────"
-    );
+    println!("  {:20}  {:>8}  {:>8}", "GPU", "FP16", "Ternary");
+    println!("  {:20}  {:>8}  {:>8}", "───", "────", "───────");
 
     for &(gpu_name, vram) in gpus {
         let mut params = Vec::new();
@@ -224,10 +224,7 @@ pub fn print_max_parameters() {
             let max_params = (vram as f64 * 8.0) / (fmt.bytes_per_param * 8.0) / 1e9;
             params.push(format!("{:.1}B", max_params));
         }
-        println!(
-            "  {:20}  {:>8}  {:>8}",
-            gpu_name, params[0], params[1]
-        );
+        println!("  {:20}  {:>8}  {:>8}", gpu_name, params[0], params[1]);
     }
     println!();
     println!("  Note: Actual capacity is ~10-15% lower due to runtime buffers, CUDA/HIP overhead, and fragmentation.");
@@ -260,14 +257,8 @@ pub fn bench_kv_cache_simulation() {
 
     println!("  KV cache size by context length:");
     println!();
-    println!(
-        "  {:>10}  {:>10}  {:>10}",
-        "Context", "FP32", "FP16"
-    );
-    println!(
-        "  {:>10}  {:>10}  {:>10}",
-        "──────", "────", "────"
-    );
+    println!("  {:>10}  {:>10}  {:>10}", "Context", "FP32", "FP16");
+    println!("  {:>10}  {:>10}  {:>10}", "──────", "────", "────");
 
     for &ctx in &context_lengths {
         let kv_base = cfg.layers * 2 * ctx * cfg.kv_heads * cfg.head_dim;
@@ -313,14 +304,8 @@ pub fn print_real_inference_fit() {
         total: fp16_weights + fp16_kv + overhead + runtime_bytes,
     });
 
-    println!(
-        "  {:32} {:>10}  Fits?",
-        "Format", "Total VRAM"
-    );
-    println!(
-        "  {:32} {:>10}  ────",
-        "──────", "─────────"
-    );
+    println!("  {:32} {:>10}  Fits?", "Format", "Total VRAM");
+    println!("  {:32} {:>10}  ────", "──────", "─────────");
 
     let gpus: &[(&str, u64)] = &[
         ("RX 7600 8GB", 8 * 1024 * 1024 * 1024),
@@ -339,12 +324,7 @@ pub fn print_real_inference_fit() {
         } else {
             format!("  {}", fits_gpus.join(", "))
         };
-        println!(
-            "  {:32} {:>10}{}",
-            row.label,
-            fmt_bytes(row.total),
-            fit_str
-        );
+        println!("  {:32} {:>10}{}", row.label, fmt_bytes(row.total), fit_str);
     }
     println!();
 

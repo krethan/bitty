@@ -20,13 +20,13 @@
 //! documents when ternary readout replacement fails and why.
 
 use bitllm_runtime::Model;
-use bitllm_train::lora::{TernaryLoRA, TernaryLoRAConfig};
 use bitllm_tensor::{simd, Tensor};
+use bitllm_train::lora::{TernaryLoRA, TernaryLoRAConfig};
 
 use crate::export::TrainRow;
 use crate::perplexity::{
     bigram_log_probs, build_synthetic_model, char_tokenize, ln_softmax, synthetic_corpus, Rng,
-    SEED, EVAL_CONTEXT, VOCAB,
+    EVAL_CONTEXT, SEED, VOCAB,
 };
 
 fn build_target(corpus: &str) -> (Tensor, Tensor, Tensor) {
@@ -113,18 +113,13 @@ fn train_readout(
     tokens: &[u32],
 ) -> TrainResult {
     let cfg = TernaryLoRAConfig::new(VOCAB, VOCAB, rank, 1);
-    let cfg = TernaryLoRAConfig {
-        init_scale,
-        ..cfg
-    };
+    let cfg = TernaryLoRAConfig { init_scale, ..cfg };
     let mut lora = TernaryLoRA::new(cfg);
     let mut mse = 0.0f32;
     for s in 0..sweeps {
         mse = lora.train_step(x, target, Some(weights));
         if sweeps > 200 && s % (sweeps / 4) == 0 {
-            println!(
-                "    [rank {rank}, scale {init_scale:.3}] sweep {s:>4} mse {mse:.6}"
-            );
+            println!("    [rank {rank}, scale {init_scale:.3}] sweep {s:>4} mse {mse:.6}");
         }
     }
     let ppl = eval_readout(model, &lora.weight(), tokens);
@@ -162,33 +157,20 @@ pub fn bench_train() -> Vec<TrainRow> {
     let exact_t = Tensor::from_slice(&exact, &[VOCAB, VOCAB]);
     let mut model = build_synthetic_model(&bigram);
     let ppl_fp32 = eval_readout(&mut model, &exact_t, &tokens);
-    println!(
-        "  exact FP32 readout ppl: {ppl_fp32:.3}   (uniform floor {VOCAB})",
-    );
+    println!("  exact FP32 readout ppl: {ppl_fp32:.3}   (uniform floor {VOCAB})",);
     println!(
         "  training target: bigram_logp on the 96×96 prev→next table,\n\
          \x20 read out via √hidden·W; weighted by corpus transition counts;\n\
          \x20 ternary LoRA via block coordinate descent. Eval on real hidden states.\n"
     );
 
-    let configs: &[(usize, f32, usize)] = &[
-        (4, 0.1, 400),
-        (4, 0.05, 400),
-        (8, 0.05, 300),
-        (8, 0.1, 300),
-    ];
+    let configs: &[(usize, f32, usize)] =
+        &[(4, 0.1, 400), (4, 0.05, 400), (8, 0.05, 300), (8, 0.1, 300)];
 
     let mut rows = Vec::with_capacity(configs.len());
     for &(rank, init_scale, sweeps) in configs {
         let r = train_readout(
-            rank,
-            init_scale,
-            sweeps,
-            &x,
-            &target,
-            &weights,
-            &mut model,
-            &tokens,
+            rank, init_scale, sweeps, &x, &target, &weights, &mut model, &tokens,
         );
         let compression = r.fp32_bytes as f64 / r.weight_bytes.max(1) as f64;
         println!(

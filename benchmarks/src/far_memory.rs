@@ -102,7 +102,11 @@ fn build_memory(history: &[u32]) -> ContextMemory {
 
 /// Value the memory predicts for each replay key, if its first-occurrence
 /// record is still retrievable.
-fn memory_readouts(mem: &ContextMemory, keys: &[Vec<u32>], pairs: &[RepeatPair]) -> Vec<Option<u32>> {
+fn memory_readouts(
+    mem: &ContextMemory,
+    keys: &[Vec<u32>],
+    pairs: &[RepeatPair],
+) -> Vec<Option<u32>> {
     (0..REPLAYS)
         .map(|i| {
             let refs: Vec<&bitllm_cognition::HyperVector> =
@@ -110,9 +114,7 @@ fn memory_readouts(mem: &ContextMemory, keys: &[Vec<u32>], pairs: &[RepeatPair])
             let query = bundle(&refs);
             mem.probe(&query).and_then(|(_, rec)| {
                 let value_idx = pairs[i].first + KEY_LEN + VALUE_GAP;
-                if rec.start <= pairs[i].first
-                    && value_idx < rec.start + rec.tokens.len()
-                {
+                if rec.start <= pairs[i].first && value_idx < rec.start + rec.tokens.len() {
                     Some(rec.tokens[value_idx - rec.start])
                 } else {
                     None
@@ -227,8 +229,14 @@ pub fn bench_memory() -> Vec<MemoryRow> {
 
     let (sum_nll, n, echo_sum, echo_n, _) =
         evaluate_with_memory(&mut model, &tokens, &pairs, &readouts, EVAL_CONTEXT, 0.0);
-    let (mem_sum, mem_n, mem_echo_sum, mem_echo_n, mem_hits) =
-        evaluate_with_memory(&mut model, &tokens, &pairs, &readouts, EVAL_CONTEXT, MEMORY_ALPHA);
+    let (mem_sum, mem_n, mem_echo_sum, mem_echo_n, mem_hits) = evaluate_with_memory(
+        &mut model,
+        &tokens,
+        &pairs,
+        &readouts,
+        EVAL_CONTEXT,
+        MEMORY_ALPHA,
+    );
 
     let window_ppl = (sum_nll / n as f64).exp();
     let window_echo = (echo_sum / echo_n as f64).exp();
@@ -250,11 +258,7 @@ pub fn bench_memory() -> Vec<MemoryRow> {
     );
     println!(
         "{:<8} {:>10.3} {:>10.3} {:>10} {:>12}",
-        "WINDOW",
-        window_ppl,
-        window_echo,
-        "-",
-        "-"
+        "WINDOW", window_ppl, window_echo, "-", "-"
     );
     println!(
         "{:<8} {:>10.3} {:>10.3} {:>10.3} {:>12}",
@@ -300,8 +304,15 @@ mod tests {
         let mut rng = Rng::new(SEED);
         let (tokens, pairs) = build_repeat_corpus(&mut rng);
         for p in &pairs {
-            assert_eq!(tokens[p.replay + KEY_LEN], p.value, "echo target must be the value");
-            assert!(p.replay - (p.first + CHUNK) >= EVAL_CONTEXT, "replay must be far enough");
+            assert_eq!(
+                tokens[p.replay + KEY_LEN],
+                p.value,
+                "echo target must be the value"
+            );
+            assert!(
+                p.replay - (p.first + CHUNK) >= EVAL_CONTEXT,
+                "replay must be far enough"
+            );
         }
     }
 
@@ -321,6 +332,9 @@ mod tests {
             .zip(pairs.iter())
             .filter(|(r, p)| **r == Some(p.value))
             .count();
-        assert!(hits >= 15, "memory must recall the evicted values, got {hits}/16");
+        assert!(
+            hits >= 15,
+            "memory must recall the evicted values, got {hits}/16"
+        );
     }
 }

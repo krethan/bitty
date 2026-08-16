@@ -173,7 +173,11 @@ mod tests {
             (0.40..=0.60).contains(&density),
             "random-indexed sparse activation should be balanced, got density {density}"
         );
-        assert_eq!(cb.encode(&sparse).hamming_distance(&hv), 0, "encoding must be deterministic");
+        assert_eq!(
+            cb.encode(&sparse).hamming_distance(&hv),
+            0,
+            "encoding must be deterministic"
+        );
     }
 
     #[test]
@@ -202,7 +206,10 @@ mod tests {
         let (ha, hb, hc) = (cb.encode(&a), cb.encode(&b), cb.encode(&c));
         let ab = ha.hamming_distance(&hb);
         let ac = ha.hamming_distance(&hc);
-        assert!(ab < ac, "overlapping activations must be closer: ab={ab} ac={ac}");
+        assert!(
+            ab < ac,
+            "overlapping activations must be closer: ab={ab} ac={ac}"
+        );
     }
 
     #[test]
@@ -241,7 +248,8 @@ mod tests {
 
         let n = 512;
         let cb = RandomIndexCodebook::new(512);
-        let packets: Vec<PNActivation256> = (0..n).map(|i| sparse_packet(16, i as u64 + 1)).collect();
+        let packets: Vec<PNActivation256> =
+            (0..n).map(|i| sparse_packet(16, i as u64 + 1)).collect();
 
         let mut mem: SparseAssociativeMemory<usize> = SparseAssociativeMemory::with_capacity(n);
         for (i, p) in packets.iter().enumerate() {
@@ -256,7 +264,10 @@ mod tests {
             }
         }
         let recall = hits as f32 / n as f32;
-        assert!(recall >= 0.9, "linear recall must recover original packet, recall@1 = {recall}");
+        assert!(
+            recall >= 0.9,
+            "linear recall must recover original packet, recall@1 = {recall}"
+        );
     }
 
     // NOTE: graph-based retrieval of these same encoded keys was attempted

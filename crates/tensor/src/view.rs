@@ -52,7 +52,11 @@ impl<'a> TensorView<'a> {
     }
 
     pub fn transpose_view(&self) -> Self {
-        assert_eq!(self.shape.len(), 2, "transpose_view only supports 2d tensors");
+        assert_eq!(
+            self.shape.len(),
+            2,
+            "transpose_view only supports 2d tensors"
+        );
         let rows = self.shape[0];
         let cols = self.shape[1];
         Self {

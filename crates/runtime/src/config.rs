@@ -39,8 +39,9 @@ impl Architecture {
                         "MistralForCausalLM" | "MistralModel" => Architecture::Mistral,
                         "GPT2LMHeadModel" | "GPT2Model" => Architecture::Gpt2,
                         "PhiForCausalLM" | "PhiModel" => Architecture::Phi,
-                        "GemmaForCausalLM" | "GemmaModel" | "Gemma2ForCausalLM"
-                        | "Gemma2Model" => Architecture::Gemma,
+                        "GemmaForCausalLM" | "GemmaModel" | "Gemma2ForCausalLM" | "Gemma2Model" => {
+                            Architecture::Gemma
+                        }
                         "Qwen2ForCausalLM" | "Qwen2Model" => Architecture::Qwen2,
                         "Qwen3ForCausalLM" | "Qwen3Model" => Architecture::Qwen3,
                         other => Architecture::Custom(other.to_string()),
@@ -48,16 +49,19 @@ impl Architecture {
                 }
             }
         }
-        config.get("model_type").and_then(|v| v.as_str()).map(|s| match s {
-            "llama" => Architecture::Llama,
-            "mistral" => Architecture::Mistral,
-            "gpt2" => Architecture::Gpt2,
-            "phi" => Architecture::Phi,
-            "gemma" | "gemma2" => Architecture::Gemma,
-            "qwen2" => Architecture::Qwen2,
-            "qwen3" => Architecture::Qwen3,
-            other => Architecture::Custom(other.to_string()),
-        })
+        config
+            .get("model_type")
+            .and_then(|v| v.as_str())
+            .map(|s| match s {
+                "llama" => Architecture::Llama,
+                "mistral" => Architecture::Mistral,
+                "gpt2" => Architecture::Gpt2,
+                "phi" => Architecture::Phi,
+                "gemma" | "gemma2" => Architecture::Gemma,
+                "qwen2" => Architecture::Qwen2,
+                "qwen3" => Architecture::Qwen3,
+                other => Architecture::Custom(other.to_string()),
+            })
     }
 
     /// Map a GGUF `general.architecture` string to an `Architecture`.
@@ -361,17 +365,15 @@ impl ModelConfig {
     /// - `rms_norm_eps` → `norm_eps`
     /// - `max_position_embeddings` → `max_seq_len`
     pub fn from_huggingface_json(json: &str) -> Result<Self, String> {
-        let v: Value = serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
+        let v: Value =
+            serde_json::from_str(json).map_err(|e| format!("JSON parse error: {}", e))?;
 
         let get_u64 = |key: &str| -> Option<usize> {
             v.get(key).and_then(|v| v.as_u64()).map(|n| n as usize)
         };
-        let get_f32 = |key: &str| -> Option<f32> {
-            v.get(key).and_then(|v| v.as_f64()).map(|n| n as f32)
-        };
-        let get_bool = |key: &str| -> Option<bool> {
-            v.get(key).and_then(|v| v.as_bool())
-        };
+        let get_f32 =
+            |key: &str| -> Option<f32> { v.get(key).and_then(|v| v.as_f64()).map(|n| n as f32) };
+        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|v| v.as_bool()) };
 
         let vocab_size = get_u64("vocab_size").unwrap_or(32000);
         let hidden_size = get_u64("hidden_size").ok_or("missing `hidden_size`")?;
@@ -382,8 +384,7 @@ impl ModelConfig {
             .or_else(|| get_u64("num_heads"))
             .ok_or("missing `num_attention_heads`")?;
         let num_kv_heads = get_u64("num_key_value_heads").map(Some).unwrap_or(None);
-        let intermediate_size = get_u64("intermediate_size")
-            .unwrap_or_else(|| hidden_size * 4);
+        let intermediate_size = get_u64("intermediate_size").unwrap_or_else(|| hidden_size * 4);
         let norm_eps = get_f32("rms_norm_eps")
             .or_else(|| get_f32("layer_norm_eps"))
             .unwrap_or(1e-5);
@@ -397,9 +398,16 @@ impl ModelConfig {
         // Parse rope_scaling as an object with "type" and "factor" fields
         let rope_scaling = v.get("rope_scaling").and_then(|rs| {
             if rs.is_object() {
-                let rtype = rs.get("type").and_then(|t| t.as_str()).unwrap_or("linear").to_string();
+                let rtype = rs
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("linear")
+                    .to_string();
                 let factor = rs.get("factor").and_then(|f| f.as_f64()).unwrap_or(1.0) as f32;
-                Some(RopeScaling { r#type: rtype, factor })
+                Some(RopeScaling {
+                    r#type: rtype,
+                    factor,
+                })
             } else {
                 None
             }
@@ -412,7 +420,8 @@ impl ModelConfig {
                 .and_then(|a| a.as_array())
                 .is_some_and(|a| {
                     a.iter().any(|x| {
-                        x.as_str().is_some_and(|s| s.to_lowercase().contains("gemma2"))
+                        x.as_str()
+                            .is_some_and(|s| s.to_lowercase().contains("gemma2"))
                     })
                 });
 
@@ -433,7 +442,10 @@ impl ModelConfig {
             NormType::LayerNorm
         };
 
-        let use_rope = v.get("use_rope").and_then(|u| u.as_bool()).unwrap_or_else(|| architecture.uses_rope());
+        let use_rope = v
+            .get("use_rope")
+            .and_then(|u| u.as_bool())
+            .unwrap_or_else(|| architecture.uses_rope());
         let position_embeddings = if architecture.uses_rope() {
             None
         } else {
@@ -443,9 +455,10 @@ impl ModelConfig {
                 .map(|n| n as usize)
                 .or(Some(max_seq_len))
         };
-        let qk_norm = v.get("qk_norm").and_then(|q| q.as_bool()).unwrap_or({
-            matches!(architecture, Architecture::Gemma)
-        });
+        let qk_norm = v
+            .get("qk_norm")
+            .and_then(|q| q.as_bool())
+            .unwrap_or(matches!(architecture, Architecture::Gemma));
         let sliding_window = get_u64("sliding_window").map(Some).unwrap_or(None);
         let head_dim = get_u64("head_dim").map(Some).unwrap_or(None);
 
@@ -764,7 +777,10 @@ mod tests {
         let config = ModelConfig::from_huggingface_json(json).unwrap();
         assert_eq!(config.architecture, Architecture::Gemma);
         assert!(config.post_ffn_norm, "gemma2 defaults to post-FFN norm");
-        assert!(config.one_centered_norm, "gemma/gemma2 use one-centered RMSNorm");
+        assert!(
+            config.one_centered_norm,
+            "gemma/gemma2 use one-centered RMSNorm"
+        );
         assert_eq!(config.attn_logit_softcap, Some(50.0));
         assert_eq!(config.final_logit_softcap, Some(30.0));
         assert_eq!(config.query_pre_attn_scalar, Some(224.0));

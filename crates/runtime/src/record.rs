@@ -161,7 +161,8 @@ impl Attention {
             self.config.attn_logit_softcap(),
         );
 
-        let reshaped = crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
+        let reshaped =
+            crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
         let o = self.o_proj.forward(&reshaped);
         recorder.push(ProjectionSample {
             layer: layer_idx,
@@ -184,13 +185,34 @@ mod tests {
         let config = ModelConfig::tiny_test();
         let mut model = Model::new(config.clone());
         for layer in &mut model.layers {
-            layer.attention.q_proj.weight = Tensor::random(&[config.hidden_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.attention.k_proj.weight = Tensor::random(&[config.hidden_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.attention.v_proj.weight = Tensor::random(&[config.hidden_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.attention.o_proj.weight = Tensor::random(&[config.hidden_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.ffn_up.weight = Tensor::random(&[config.intermediate_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.ffn_gate.weight = Tensor::random(&[config.intermediate_size, config.hidden_size], bitllm_tensor::DType::F32);
-            layer.ffn_down.weight = Tensor::random(&[config.hidden_size, config.intermediate_size], bitllm_tensor::DType::F32);
+            layer.attention.q_proj.weight = Tensor::random(
+                &[config.hidden_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.attention.k_proj.weight = Tensor::random(
+                &[config.hidden_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.attention.v_proj.weight = Tensor::random(
+                &[config.hidden_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.attention.o_proj.weight = Tensor::random(
+                &[config.hidden_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.ffn_up.weight = Tensor::random(
+                &[config.intermediate_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.ffn_gate.weight = Tensor::random(
+                &[config.intermediate_size, config.hidden_size],
+                bitllm_tensor::DType::F32,
+            );
+            layer.ffn_down.weight = Tensor::random(
+                &[config.hidden_size, config.intermediate_size],
+                bitllm_tensor::DType::F32,
+            );
         }
 
         let tokens: Vec<u32> = (0..16).map(|i| i * 13 % config.vocab_size as u32).collect();
@@ -281,8 +303,10 @@ mod tests {
                 Tensor::random(&[kv_hidden, hidden], bitllm_tensor::DType::F32);
             layer.attention.o_proj.weight =
                 Tensor::random(&[hidden, num_heads * head_dim], bitllm_tensor::DType::F32);
-            layer.attention.q_proj.bias =
-                Some(Tensor::random(&[num_heads * head_dim], bitllm_tensor::DType::F32));
+            layer.attention.q_proj.bias = Some(Tensor::random(
+                &[num_heads * head_dim],
+                bitllm_tensor::DType::F32,
+            ));
             layer.attention.k_proj.bias =
                 Some(Tensor::random(&[kv_hidden], bitllm_tensor::DType::F32));
             layer.attention.v_proj.bias =
@@ -361,8 +385,8 @@ mod tests {
         assert_eq!(config.num_heads, 14);
         assert_eq!(config.num_kv_heads(), 2);
 
-        let loader = crate::loader::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
-            .unwrap();
+        let loader =
+            crate::loader::SafeTensorsLoader::load(format!("{}/model.safetensors", dir)).unwrap();
         let mut model = Model::new(config.clone());
         let stats = crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
         assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);

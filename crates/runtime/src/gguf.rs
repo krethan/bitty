@@ -72,7 +72,6 @@ impl GgmlType {
             Self::I32 => 4,
         }
     }
-
 }
 
 #[derive(Debug, Clone)]
@@ -555,7 +554,11 @@ fn f16_to_f32(h: u16) -> f32 {
             // Subnormal: value = sign * mantissa * 2^-24. The bit-shift
             // normalization below underflows on the smallest subnormals.
             let v = (mantissa as f32) * 2f32.powi(-24);
-            if sign == 1 { -v } else { v }
+            if sign == 1 {
+                -v
+            } else {
+                v
+            }
         }
     } else if exp == 31 {
         f32::from_bits((sign << 31) | 0x7F800000 | (mantissa << 13))

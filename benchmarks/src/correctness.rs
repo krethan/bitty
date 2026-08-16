@@ -8,7 +8,11 @@ type QuantScheme = (&'static str, Box<dyn Fn(&Tensor) -> Tensor>);
 // --- Metric helpers ---
 
 fn mse(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum::<f32>() / a.len() as f32
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).powi(2))
+        .sum::<f32>()
+        / a.len() as f32
 }
 
 fn rmse(a: &[f32], b: &[f32]) -> f32 {
@@ -24,7 +28,10 @@ fn relative_rmse(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn max_abs_error(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max)
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -115,10 +122,30 @@ fn aggregate_metrics(all: &[Metrics]) -> (Metrics, Metrics) {
     };
     let std = Metrics {
         mse: (all.iter().map(|m| (m.mse - mean.mse).powi(2)).sum::<f32>() / n).sqrt(),
-        rmse: (all.iter().map(|m| (m.rmse - mean.rmse).powi(2)).sum::<f32>() / n).sqrt(),
-        rrmse: (all.iter().map(|m| (m.rrmse - mean.rrmse).powi(2)).sum::<f32>() / n).sqrt(),
-        max_err: (all.iter().map(|m| (m.max_err - mean.max_err).powi(2)).sum::<f32>() / n).sqrt(),
-        cos_sim: (all.iter().map(|m| (m.cos_sim - mean.cos_sim).powi(2)).sum::<f32>() / n).sqrt(),
+        rmse: (all
+            .iter()
+            .map(|m| (m.rmse - mean.rmse).powi(2))
+            .sum::<f32>()
+            / n)
+            .sqrt(),
+        rrmse: (all
+            .iter()
+            .map(|m| (m.rrmse - mean.rrmse).powi(2))
+            .sum::<f32>()
+            / n)
+            .sqrt(),
+        max_err: (all
+            .iter()
+            .map(|m| (m.max_err - mean.max_err).powi(2))
+            .sum::<f32>()
+            / n)
+            .sqrt(),
+        cos_sim: (all
+            .iter()
+            .map(|m| (m.cos_sim - mean.cos_sim).powi(2))
+            .sum::<f32>()
+            / n)
+            .sqrt(),
     };
     (mean, std)
 }
@@ -138,11 +165,12 @@ fn print_agg(label: &str, mean: &Metrics, std: &Metrics) {
 // --- Benchmark sections ---
 
 fn bench_weight_reconstruction(size: usize, n_trials: usize) {
-    println!("  {}x{} weight reconstruction ({} trials, seeded RNG):", size, size, n_trials);
+    println!(
+        "  {}x{} weight reconstruction ({} trials, seeded RNG):",
+        size, size, n_trials
+    );
 
-    let schemes: Vec<QuantScheme> = vec![
-        ("Ternary (2-bit)", Box::new(quantize_ternary)),
-    ];
+    let schemes: Vec<QuantScheme> = vec![("Ternary (2-bit)", Box::new(quantize_ternary))];
 
     let mut all_metrics: HashMap<&str, Vec<Metrics>> = HashMap::new();
     for &(name, _) in &schemes {
@@ -171,12 +199,13 @@ fn bench_weight_reconstruction(size: usize, n_trials: usize) {
 }
 
 fn bench_inference_output(size: usize, n_trials: usize) {
-    println!("  {}x{} inference output comparison ({} trials):", size, size, n_trials);
+    println!(
+        "  {}x{} inference output comparison ({} trials):",
+        size, size, n_trials
+    );
     println!("  (output = input @ quantized_weight^T, compared to input @ weight^T)\n");
 
-    let schemes: Vec<QuantScheme> = vec![
-        ("Ternary (2-bit)", Box::new(quantize_ternary)),
-    ];
+    let schemes: Vec<QuantScheme> = vec![("Ternary (2-bit)", Box::new(quantize_ternary))];
 
     let mut all_metrics: HashMap<&str, Vec<Metrics>> = HashMap::new();
     for &(name, _) in &schemes {

@@ -4,7 +4,10 @@ use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let gguf_path = PathBuf::from(args.next().expect("usage: dump_tensor <model.gguf> <tensor_name> <out.bin>"));
+    let gguf_path = PathBuf::from(
+        args.next()
+            .expect("usage: dump_tensor <model.gguf> <tensor_name> <out.bin>"),
+    );
     let tensor_name = args.next().expect("tensor name");
     let out = args.next().expect("output path");
 

@@ -8,8 +8,8 @@
 //! The directory must contain `config.json` and `model.safetensors`; a
 //! `tokenizer.json` is used when present (otherwise a byte fallback).
 
-use bitllm_server::loader::{load_model, ModelLoadOptions};
 use bitllm_runtime::Sampler;
+use bitllm_server::loader::{load_model, ModelLoadOptions};
 use std::path::PathBuf;
 
 fn main() -> anyhow::Result<()> {
@@ -43,7 +43,9 @@ fn main() -> anyhow::Result<()> {
             device: bitllm_tensor::Device::Cpu,
         }
     } else {
-        let dir = dir.ok_or_else(|| anyhow::anyhow!("usage: real_model_check <model_dir> or --gguf <file>"))?;
+        let dir = dir.ok_or_else(|| {
+            anyhow::anyhow!("usage: real_model_check <model_dir> or --gguf <file>")
+        })?;
         let safetensors = dir.join("model.safetensors");
         let config_json = dir.join("config.json");
         anyhow::ensure!(safetensors.exists(), "missing {}", safetensors.display());
@@ -90,7 +92,11 @@ fn main() -> anyhow::Result<()> {
     let logits = model.forward(&[1u32, 2, 3, 4]);
     let slice = logits.as_f32_slice();
     let is_finite = slice.iter().all(|x| x.is_finite());
-    println!("forward logits shape={:?} finite={}", logits.shape(), is_finite);
+    println!(
+        "forward logits shape={:?} finite={}",
+        logits.shape(),
+        is_finite
+    );
     anyhow::ensure!(
         is_finite,
         "non-finite logits — forward pass broken for this architecture"
@@ -113,7 +119,11 @@ fn main() -> anyhow::Result<()> {
     let sampler = Sampler::greedy();
     let prompt_tokens = tokenizer.encode_with_special(&prompt, true, false);
     println!("\nprompt: {:?}", prompt);
-    println!("prompt tokens ({}): {:?}", prompt_tokens.len(), prompt_tokens);
+    println!(
+        "prompt tokens ({}): {:?}",
+        prompt_tokens.len(),
+        prompt_tokens
+    );
     let generated = model.generate(&prompt_tokens, 24, &sampler);
     let text = tokenizer.decode(&generated).unwrap_or_default();
     println!("generated {} tokens: {:?}", generated.len(), generated);

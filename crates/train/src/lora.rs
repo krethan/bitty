@@ -173,7 +173,11 @@ impl TernaryLoRA {
             self.config.output_dim,
             self.config.rank,
         );
-        assert_eq!(x.shape(), &[target.shape()[0], inn], "x/target rows must match");
+        assert_eq!(
+            x.shape(),
+            &[target.shape()[0], inn],
+            "x/target rows must match"
+        );
         assert_eq!(
             target.shape(),
             &[x.shape()[0], out],
@@ -206,7 +210,11 @@ impl TernaryLoRA {
             e[i] = o - tg;
         }
         let mut loss = squared_loss(&e, w, t, out);
-        let total_w = if w.is_empty() { (t * out) as f32 } else { w.iter().sum() };
+        let total_w = if w.is_empty() {
+            (t * out) as f32
+        } else {
+            w.iter().sum()
+        };
         let scale_a = self.scale_a;
         let scale_b = self.scale_b;
 
@@ -245,9 +253,7 @@ impl TernaryLoRA {
             let mut best_delta = 0.0f32;
             let mut best_combo: Option<Vec<i8>> = None;
             for combo in &combos {
-                let delta = (0..rank)
-                    .map(|r| combo[r] - cur[r])
-                    .collect::<Vec<_>>();
+                let delta = (0..rank).map(|r| combo[r] - cur[r]).collect::<Vec<_>>();
                 let mut d = 0.0f32;
                 for r in 0..rank {
                     d += 2.0 * (delta[r] as f32) * p1[r];
@@ -428,25 +434,36 @@ mod tests {
     fn mse_loss(out: &Tensor, target: &Tensor) -> f32 {
         let o = out.as_f32_slice();
         let t = target.as_f32_slice();
-        o.iter().zip(t.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f32>() / o.len() as f32
+        o.iter()
+            .zip(t.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            / o.len() as f32
     }
 
     #[test]
     fn packed_roundtrip() {
         let mut packed = vec![0u8; 3];
         for i in 0..12 {
-            set_trit(&mut packed, i, match i % 3 {
-                0 => -1,
-                1 => 0,
-                _ => 1,
-            });
+            set_trit(
+                &mut packed,
+                i,
+                match i % 3 {
+                    0 => -1,
+                    1 => 0,
+                    _ => 1,
+                },
+            );
         }
         for i in 0..12 {
-            assert_eq!(trit_at(&packed, i), match i % 3 {
-                0 => -1,
-                1 => 0,
-                _ => 1,
-            });
+            assert_eq!(
+                trit_at(&packed, i),
+                match i % 3 {
+                    0 => -1,
+                    1 => 0,
+                    _ => 1,
+                }
+            );
         }
     }
 
@@ -455,7 +472,9 @@ mod tests {
         let cfg = TernaryLoRAConfig::new(8, 6, 4, 7);
         let lora = TernaryLoRA::new(cfg);
         let x = tensor2d(
-            &(0..40).map(|i| (i as f32 - 20.0) / 20.0).collect::<Vec<_>>(),
+            &(0..40)
+                .map(|i| (i as f32 - 20.0) / 20.0)
+                .collect::<Vec<_>>(),
             5,
             8,
         );
@@ -575,10 +594,7 @@ mod tests {
         let mut prev = mse_loss(&lora.forward(&x), &y);
         for _ in 0..100 {
             let l = lora.train_step(&x, &y, None);
-            assert!(
-                l <= prev + 1e-5,
-                "BCD must be monotone: {prev} -> {l}"
-            );
+            assert!(l <= prev + 1e-5, "BCD must be monotone: {prev} -> {l}");
             prev = l;
         }
     }

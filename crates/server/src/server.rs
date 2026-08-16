@@ -13,8 +13,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use bitllm_tokenizer::BpeTokenizer;
 use bitllm_tensor::Device;
+use bitllm_tokenizer::BpeTokenizer;
 use futures::stream::Stream;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
@@ -67,7 +67,8 @@ impl RequestGuard {
 impl Drop for RequestGuard {
     fn drop(&mut self) {
         self.metrics.in_flight_dec();
-        self.metrics.observe_duration(self.start.elapsed().as_secs_f64());
+        self.metrics
+            .observe_duration(self.start.elapsed().as_secs_f64());
     }
 }
 
@@ -354,7 +355,9 @@ async fn handle_swap_model(
     if !has_source {
         return Err((
             StatusCode::BAD_REQUEST,
-            Json(error_response("model swap requires gguf, safetensors, or config")),
+            Json(error_response(
+                "model swap requires gguf, safetensors, or config",
+            )),
         ));
     }
 
@@ -418,7 +421,8 @@ async fn handle_ws_session(mut socket: WebSocket, state: Arc<AppState>) {
             Some(Ok(Message::Text(txt))) => match serde_json::from_str(&txt) {
                 Ok(req) => break req,
                 Err(e) => {
-                    let _ = send_ws_frame(&mut socket, "error", &format!("invalid request: {}", e)).await;
+                    let _ = send_ws_frame(&mut socket, "error", &format!("invalid request: {}", e))
+                        .await;
                     return;
                 }
             },
@@ -498,7 +502,10 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> Json<Value> {
 async fn handle_metrics(State(state): State<Arc<AppState>>) -> Response {
     let body = state.metrics.render();
     (
-        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         body,
     )
         .into_response()

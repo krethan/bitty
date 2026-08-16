@@ -379,9 +379,7 @@ pub fn f32_mul_scaled(a: &[f32], b: &[f32], scale: f32, out: &mut [f32]) {
     assert_eq!(a.len(), b.len());
     assert_eq!(a.len(), out.len());
     if is_x86_feature_detected!("avx2") && a.len() >= 8 {
-        unsafe {
-            f32_mul_scaled_avx2(a.as_ptr(), b.as_ptr(), scale, out.as_mut_ptr(), a.len())
-        };
+        unsafe { f32_mul_scaled_avx2(a.as_ptr(), b.as_ptr(), scale, out.as_mut_ptr(), a.len()) };
     } else {
         for i in 0..a.len() {
             out[i] = a[i] * b[i] * scale;
@@ -578,9 +576,7 @@ pub fn f32_silu_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
     assert_eq!(a.len(), b.len());
     assert_eq!(a.len(), out.len());
     if is_x86_feature_detected!("avx2") && a.len() >= 8 {
-        unsafe {
-            f32_silu_mul_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), a.len())
-        };
+        unsafe { f32_silu_mul_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), a.len()) };
     } else {
         for i in 0..a.len() {
             out[i] = (a[i] / (1.0 + (-a[i]).exp())) * b[i];
@@ -654,7 +650,13 @@ unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize)
 }
 
 #[target_feature(enable = "avx2,fma")]
-unsafe fn f32_matmul_row_avx2_unrolled(a: *const f32, b_t: *const f32, out: *mut f32, k: usize, n: usize) {
+unsafe fn f32_matmul_row_avx2_unrolled(
+    a: *const f32,
+    b_t: *const f32,
+    out: *mut f32,
+    k: usize,
+    n: usize,
+) {
     let mut j = 0;
     while j + 4 <= n {
         let mut s0 = _mm256_setzero_ps();
@@ -770,7 +772,9 @@ unsafe fn f32_matmul_row_partial_avx2(
 
 pub fn f32_matmul_row(a: &[f32], b_t: &[f32], out_row: &mut [f32], k: usize, n: usize) {
     if is_x86_feature_detected!("avx2") && k >= 8 {
-        unsafe { f32_matmul_row_avx2_unrolled(a.as_ptr(), b_t.as_ptr(), out_row.as_mut_ptr(), k, n) };
+        unsafe {
+            f32_matmul_row_avx2_unrolled(a.as_ptr(), b_t.as_ptr(), out_row.as_mut_ptr(), k, n)
+        };
     } else {
         for j in (0..n).step_by(4) {
             let remaining = n - j;
@@ -781,14 +785,26 @@ pub fn f32_matmul_row(a: &[f32], b_t: &[f32], out_row: &mut [f32], k: usize, n: 
             for t in 0..k {
                 let av = a[t];
                 s0 += av * b_t[j * k + t];
-                if remaining > 1 { s1 += av * b_t[(j + 1) * k + t]; }
-                if remaining > 2 { s2 += av * b_t[(j + 2) * k + t]; }
-                if remaining > 3 { s3 += av * b_t[(j + 3) * k + t]; }
+                if remaining > 1 {
+                    s1 += av * b_t[(j + 1) * k + t];
+                }
+                if remaining > 2 {
+                    s2 += av * b_t[(j + 2) * k + t];
+                }
+                if remaining > 3 {
+                    s3 += av * b_t[(j + 3) * k + t];
+                }
             }
             out_row[j] = s0;
-            if remaining > 1 { out_row[j + 1] = s1; }
-            if remaining > 2 { out_row[j + 2] = s2; }
-            if remaining > 3 { out_row[j + 3] = s3; }
+            if remaining > 1 {
+                out_row[j + 1] = s1;
+            }
+            if remaining > 2 {
+                out_row[j + 2] = s2;
+            }
+            if remaining > 3 {
+                out_row[j + 3] = s3;
+            }
         }
     }
 }
@@ -834,14 +850,26 @@ pub fn f32_matmul(a: &[f32], b_t: &[f32], out: &mut [f32], m: usize, k: usize, n
                     for t in 0..kk_len {
                         let av = a_row[t];
                         s0 += av * b_slice[j * k + t];
-                        if remaining > 1 { s1 += av * b_slice[(j + 1) * k + t]; }
-                        if remaining > 2 { s2 += av * b_slice[(j + 2) * k + t]; }
-                        if remaining > 3 { s3 += av * b_slice[(j + 3) * k + t]; }
+                        if remaining > 1 {
+                            s1 += av * b_slice[(j + 1) * k + t];
+                        }
+                        if remaining > 2 {
+                            s2 += av * b_slice[(j + 2) * k + t];
+                        }
+                        if remaining > 3 {
+                            s3 += av * b_slice[(j + 3) * k + t];
+                        }
                     }
                     out_row[j] += s0;
-                    if remaining > 1 { out_row[j + 1] += s1; }
-                    if remaining > 2 { out_row[j + 2] += s2; }
-                    if remaining > 3 { out_row[j + 3] += s3; }
+                    if remaining > 1 {
+                        out_row[j + 1] += s1;
+                    }
+                    if remaining > 2 {
+                        out_row[j + 2] += s2;
+                    }
+                    if remaining > 3 {
+                        out_row[j + 3] += s3;
+                    }
                 }
             }
         }
@@ -923,9 +951,7 @@ pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usi
     assert_eq!(popcounts.len(), n_bytes);
 
     if is_x86_feature_detected!("avx2") && n_bytes >= 32 {
-        unsafe {
-            xnor_popcount_1bit_avx2(a.as_ptr(), b.as_ptr(), popcounts.as_mut_ptr(), n_bytes)
-        };
+        unsafe { xnor_popcount_1bit_avx2(a.as_ptr(), b.as_ptr(), popcounts.as_mut_ptr(), n_bytes) };
     } else {
         for i in 0..n_bytes {
             popcounts[i] = (!a[i] ^ b[i]).count_ones();
@@ -936,16 +962,11 @@ pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usi
 /// AVX2 per-byte popcount using VPSHUFB lookup table + nibble masking.
 /// Stores byte-sized popcounts (0..8) widened to u32.
 #[target_feature(enable = "avx2")]
-unsafe fn xnor_popcount_1bit_avx2(
-    a: *const u8,
-    b: *const u8,
-    popcounts: *mut u32,
-    n_bytes: usize,
-) {
+unsafe fn xnor_popcount_1bit_avx2(a: *const u8, b: *const u8, popcounts: *mut u32, n_bytes: usize) {
     // Lookup table: low nibble popcount {0..15}
     let lookup = _mm256_setr_epi8(
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3,
+        3, 4,
     );
     let low_mask = _mm256_set1_epi8(0x0F);
 

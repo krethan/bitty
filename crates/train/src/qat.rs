@@ -451,7 +451,12 @@ fn sdpa_forward(
             let mut maxv = f32::NEG_INFINITY;
             for n in 0..=m {
                 let k_row = &ks[kv_h * seq * head_dim + n * head_dim..][..head_dim];
-                let s = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>() / scale;
+                let s = q_row
+                    .iter()
+                    .zip(k_row.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>()
+                    / scale;
                 scores[n] = s;
                 if s > maxv {
                     maxv = s;
@@ -515,8 +520,8 @@ fn sdpa_backward(
             for d in 0..head_dim {
                 let mut acc = 0.0f32;
                 for m in 0..seq {
-                    acc += ps[h * seq * seq + m * seq + n]
-                        * gs[h * seq * head_dim + m * head_dim + d];
+                    acc +=
+                        ps[h * seq * seq + m * seq + n] * gs[h * seq * head_dim + m * head_dim + d];
                 }
                 gvs[kv_h * seq * head_dim + n * head_dim + d] += acc;
             }
@@ -544,8 +549,7 @@ fn sdpa_backward(
             for tt in 0..head_dim {
                 let mut acc = 0.0f32;
                 for n in 0..seq {
-                    acc += glogits[m * seq + n]
-                        * ks[kv_h * seq * head_dim + n * head_dim + tt];
+                    acc += glogits[m * seq + n] * ks[kv_h * seq * head_dim + n * head_dim + tt];
                 }
                 gqs[h * seq * head_dim + m * head_dim + tt] = acc / scale;
             }
@@ -555,8 +559,7 @@ fn sdpa_backward(
             for tt in 0..head_dim {
                 let mut acc = 0.0f32;
                 for m in 0..seq {
-                    acc += glogits[m * seq + n]
-                        * qs[h * seq * head_dim + m * head_dim + tt];
+                    acc += glogits[m * seq + n] * qs[h * seq * head_dim + m * head_dim + tt];
                 }
                 gks[kv_h * seq * head_dim + n * head_dim + tt] += acc / scale;
             }
@@ -624,8 +627,18 @@ fn layer_forward(p: &LayerProj, h_in: &Tensor, cfg: &ModelConfig) -> (Tensor, Sa
     let k = p.k.forward(&block1);
     let v = p.v.forward(&block1);
 
-    let q_r = apply_rotary_emb(&reshape_for_attention(&q, num_heads, hd), 0, hd, cfg.rope_theta);
-    let k_r = apply_rotary_emb(&reshape_for_attention(&k, num_kv, hd), 0, hd, cfg.rope_theta);
+    let q_r = apply_rotary_emb(
+        &reshape_for_attention(&q, num_heads, hd),
+        0,
+        hd,
+        cfg.rope_theta,
+    );
+    let k_r = apply_rotary_emb(
+        &reshape_for_attention(&k, num_kv, hd),
+        0,
+        hd,
+        cfg.rope_theta,
+    );
     let v_r = reshape_for_attention(&v, num_kv, hd);
 
     let (attn_heads, p_soft) = sdpa_forward(&q_r, &k_r, &v_r, num_heads, num_kv, hd, seq);
@@ -679,7 +692,12 @@ fn acc_grad(grad: &mut [f32], g: Tensor) {
 
 /// Student layer backward. Accumulates the seven per-projection gradients into
 /// `p` and returns `g_h_in` (the gradient w.r.t. the layer input).
-fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &ModelConfig) -> Tensor {
+fn layer_backward(
+    p: &mut LayerProj,
+    s: &SavedLayer,
+    g_h_out: &Tensor,
+    cfg: &ModelConfig,
+) -> Tensor {
     let num_heads = cfg.num_heads;
     let num_kv = cfg.num_kv_heads();
     let hd = cfg.head_dim();
@@ -687,13 +705,12 @@ fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &Mod
 
     // --- FFN branch: h_out = h_mid + down_out ---
     let g_activated = g_h_out.dot(&p.down.dequant).unwrap(); // [T, H]·[H, inter]
-    acc_grad(&mut p.down.grad, g_h_out.transpose().dot(&s.activated).unwrap());
+    acc_grad(
+        &mut p.down.grad,
+        g_h_out.transpose().dot(&s.activated).unwrap(),
+    );
     // d(activated)/d(up) = silu(g) = g·σ(g) (activated = silu(g)·up).
-    let g_up = g_activated
-        .mul(&s.gate)
-        .unwrap()
-        .mul(&s.gate_sig)
-        .unwrap();
+    let g_up = g_activated.mul(&s.gate).unwrap().mul(&s.gate_sig).unwrap();
     // silu'(g) = σ(g)·(1 + g·(1 − σ(g)))
     let mut silu_deriv = Tensor::zeros(&[seq, cfg.intermediate_size], DType::F32);
     {
@@ -715,7 +732,12 @@ fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &Mod
         .add(&g_gate.dot(&p.gate.dequant).unwrap())
         .unwrap();
     let g_h_mid = g_h_out
-        .add(&rmsnorm_backward(&s.h_mid, &p.ffn_norm_w, &g_block2, &s.inv_rms2))
+        .add(&rmsnorm_backward(
+            &s.h_mid,
+            &p.ffn_norm_w,
+            &g_block2,
+            &s.inv_rms2,
+        ))
         .unwrap();
 
     // --- Attention branch: h_mid = h_in + o_out ---
@@ -749,9 +771,14 @@ fn layer_backward(p: &mut LayerProj, s: &SavedLayer, g_h_out: &Tensor, cfg: &Mod
         .unwrap()
         .add(&gv_flat.dot(&p.v.dequant).unwrap())
         .unwrap();
-    
+
     g_h_mid
-        .add(&rmsnorm_backward(&s.h_in, &p.attn_norm_w, &g_block1, &s.inv_rms1))
+        .add(&rmsnorm_backward(
+            &s.h_in,
+            &p.attn_norm_w,
+            &g_block1,
+            &s.inv_rms1,
+        ))
         .unwrap()
 }
 
@@ -966,19 +993,35 @@ impl QATModel {
                     );
                 }
                 if self.config.should_train_projection("up") {
-                    apply_grad(&mut layer.ffn_up.weight, &lp.up.grad, lr, self.config.weight_clip);
+                    apply_grad(
+                        &mut layer.ffn_up.weight,
+                        &lp.up.grad,
+                        lr,
+                        self.config.weight_clip,
+                    );
                 }
                 if self.config.should_train_projection("gate") {
-                    apply_grad(&mut layer.ffn_gate.weight, &lp.gate.grad, lr, self.config.weight_clip);
+                    apply_grad(
+                        &mut layer.ffn_gate.weight,
+                        &lp.gate.grad,
+                        lr,
+                        self.config.weight_clip,
+                    );
                 }
                 if self.config.should_train_projection("down") {
-                    apply_grad(&mut layer.ffn_down.weight, &lp.down.grad, lr, self.config.weight_clip);
+                    apply_grad(
+                        &mut layer.ffn_down.weight,
+                        &lp.down.grad,
+                        lr,
+                        self.config.weight_clip,
+                    );
                 }
             }
 
             // Early stopping check
             if let (Some(eval_window), Some(teacher)) = (&self.config.eval_window, &eval_teacher) {
-                let eval_mse = eval_mse_on_window(&self.model, &self.config.quant, eval_window, teacher);
+                let eval_mse =
+                    eval_mse_on_window(&self.model, &self.config.quant, eval_window, teacher);
 
                 if eval_mse < best_eval_mse - self.config.min_delta {
                     best_eval_mse = eval_mse;
@@ -1130,13 +1173,24 @@ mod tests {
         let w = tensor2d(&w_data, 1, h);
         let gy = tensor2d(&gy_data, t, h);
         let (y, inv) = rmsnorm_forward(&x, &w, 1e-5);
-        let gy_loss = y.as_f32_slice().iter().zip(gy_data.iter()).map(|(a, b)| 2.0 * (a - b)).collect::<Vec<f32>>();
+        let gy_loss = y
+            .as_f32_slice()
+            .iter()
+            .zip(gy_data.iter())
+            .map(|(a, b)| 2.0 * (a - b))
+            .collect::<Vec<f32>>();
         let gy_true = tensor2d(&gy_loss, t, h);
         let gx = rmsnorm_backward(&x, &w, &gy_true, &inv);
         let loss = |xr: &Tensor| -> f64 {
             let (y2, _) = rmsnorm_forward(xr, &w, 1e-5);
-            y2.as_f32_slice().iter().zip(gy.as_f32_slice().iter())
-                .map(|(a, b)| { let d = (*a - *b) as f64; d * d }).sum()
+            y2.as_f32_slice()
+                .iter()
+                .zip(gy.as_f32_slice().iter())
+                .map(|(a, b)| {
+                    let d = (*a - *b) as f64;
+                    d * d
+                })
+                .sum()
         };
         let eps = 5e-3f32;
         for &idx in &[2usize, 17, 41, 62] {
@@ -1199,8 +1253,20 @@ mod tests {
         // ~1e-2 of cancellation noise, far larger than the ~1e-3 gradient
         // signals under test.
         let entries: &[(usize, usize, usize)] = &[
-            (0, 0, 7), (0, 1, 3), (0, 2, 11), (0, 3, 5), (0, 4, 9), (0, 5, 13), (0, 6, 41),
-            (1, 0, 7), (1, 1, 123), (1, 2, 33), (1, 3, 1), (1, 4, 55), (1, 5, 2), (1, 6, 17),
+            (0, 0, 7),
+            (0, 1, 3),
+            (0, 2, 11),
+            (0, 3, 5),
+            (0, 4, 9),
+            (0, 5, 13),
+            (0, 6, 41),
+            (1, 0, 7),
+            (1, 1, 123),
+            (1, 2, 33),
+            (1, 3, 1),
+            (1, 4, 55),
+            (1, 5, 2),
+            (1, 6, 17),
         ];
         let t = window.len();
         let v = config.vocab_size;
@@ -1248,7 +1314,11 @@ mod tests {
     fn end_to_end_qat_reduces_deployed_error() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
         let windows: Vec<Vec<u32>> = (0..4)
-            .map(|w| (0..24).map(|i| ((w * 40 + i * 7) % config.vocab_size) as u32).collect())
+            .map(|w| {
+                (0..24)
+                    .map(|i| ((w * 40 + i * 7) % config.vocab_size) as u32)
+                    .collect()
+            })
             .collect();
         let eval_window = windows[0].clone();
 
@@ -1284,10 +1354,7 @@ mod tests {
     fn deploy_produces_bit1_model() {
         let config = bitllm_runtime::config::ModelConfig::tiny_test();
         // Deploy mechanics don't depend on convergence, so a short run suffices.
-        let mut qat = QATModel::new(
-            random_model(&config, 5),
-            QATConfig::new().with_steps(20),
-        );
+        let mut qat = QATModel::new(random_model(&config, 5), QATConfig::new().with_steps(20));
         qat.train(&[(0..8).collect()]);
         let deployed = qat.deploy();
         assert!(deployed.is_bit1());
@@ -1399,5 +1466,3 @@ mod tests {
         );
     }
 }
-
-

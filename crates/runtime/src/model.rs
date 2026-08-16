@@ -43,9 +43,9 @@ impl TransformerLayer {
         rope_cache: Option<&RoPECache>,
     ) -> Tensor {
         let normed = self.attn_norm.forward_gpu(input, gpu);
-        let attn_out = self
-            .attention
-            .forward_gpu_with_rope_cache(&normed, cache, layer_idx, slot, position, gpu, rope_cache);
+        let attn_out = self.attention.forward_gpu_with_rope_cache(
+            &normed, cache, layer_idx, slot, position, gpu, rope_cache,
+        );
 
         #[cfg(feature = "gpu")]
         if let Some(ctx) = gpu {
@@ -152,7 +152,8 @@ impl TransformerLayer {
         let mut h = input.clone();
         h.add_assign(&attn_out).unwrap();
         let normed2 = self.ffn_norm.forward(&h);
-        let (activated, up, gate) = ffn_record_activations(&self.config, &normed2, &self.ffn_up, &self.ffn_gate);
+        let (activated, up, gate) =
+            ffn_record_activations(&self.config, &normed2, &self.ffn_up, &self.ffn_gate);
         let mut ffn_out = self.ffn_down.forward(&activated);
 
         let mut samples = vec![
@@ -210,9 +211,9 @@ impl Model {
             config.hidden_size,
         );
 
-        let pos_embedding = config.position_embeddings.map(|max_pos| {
-            Tensor::zeros(&[max_pos, config.hidden_size], DType::F32)
-        });
+        let pos_embedding = config
+            .position_embeddings
+            .map(|max_pos| Tensor::zeros(&[max_pos, config.hidden_size], DType::F32));
 
         let norm = make_norm(&config);
 
@@ -395,7 +396,12 @@ impl Model {
 
     /// Forward a sequence of tokens into a specific cache slot. The model's
     /// cache must have been sized for at least `slot + 1` batch entries.
-    pub fn forward_slot(&mut self, token_ids: &[u32], slot: usize, gpu: Option<&GpuContext>) -> Tensor {
+    pub fn forward_slot(
+        &mut self,
+        token_ids: &[u32],
+        slot: usize,
+        gpu: Option<&GpuContext>,
+    ) -> Tensor {
         let normed = self.forward_normed(token_ids, slot, gpu);
         let mut logits = self.lm_head.forward_gpu(&normed, gpu);
         self.apply_final_softcap(&mut logits);
@@ -416,7 +422,12 @@ impl Model {
     /// Like `forward_slot`, but returns the post-RMSNorm hidden states (the
     /// `lm_head` input) instead of the logits. Exposes the readout input so
     /// probes/trainers can evaluate the head on the actual hidden states.
-    pub fn forward_hidden(&mut self, token_ids: &[u32], slot: usize, gpu: Option<&GpuContext>) -> Tensor {
+    pub fn forward_hidden(
+        &mut self,
+        token_ids: &[u32],
+        slot: usize,
+        gpu: Option<&GpuContext>,
+    ) -> Tensor {
         self.forward_normed(token_ids, slot, gpu)
     }
 
@@ -449,7 +460,12 @@ impl Model {
         self.norm.forward(&hidden)
     }
 
-    fn forward_normed(&mut self, token_ids: &[u32], slot: usize, gpu: Option<&GpuContext>) -> Tensor {
+    fn forward_normed(
+        &mut self,
+        token_ids: &[u32],
+        slot: usize,
+        gpu: Option<&GpuContext>,
+    ) -> Tensor {
         let seq_len = token_ids.len();
         let pos = self.cache.as_ref().map_or(0, |c| c.seq_len(slot));
 
@@ -490,27 +506,13 @@ impl Model {
             }
         } else if let Some(ref bit_layers) = self.bit_layers {
             for (i, layer) in bit_layers.iter().enumerate() {
-                hidden = layer.forward_gpu(
-                    &hidden,
-                    None,
-                    i,
-                    slot,
-                    pos,
-                    gpu,
-                    self.rope_cache.as_ref(),
-                );
+                hidden =
+                    layer.forward_gpu(&hidden, None, i, slot, pos, gpu, self.rope_cache.as_ref());
             }
         } else {
             for (i, layer) in self.layers.iter().enumerate() {
-                hidden = layer.forward_gpu(
-                    &hidden,
-                    None,
-                    i,
-                    slot,
-                    pos,
-                    gpu,
-                    self.rope_cache.as_ref(),
-                );
+                hidden =
+                    layer.forward_gpu(&hidden, None, i, slot, pos, gpu, self.rope_cache.as_ref());
             }
         }
 
@@ -586,11 +588,7 @@ impl Model {
     ///
     /// This is the compute-bound phase: each prompt can be long, and we
     /// process all tokens in parallel. Benefits from large batch sizes.
-    pub fn prefill_batch(
-        &mut self,
-        prompts: &[&[u32]],
-        gpu: Option<&GpuContext>,
-    ) -> Tensor {
+    pub fn prefill_batch(&mut self, prompts: &[&[u32]], gpu: Option<&GpuContext>) -> Tensor {
         let batch = prompts.len();
         self.ensure_cache_batch(batch);
 
@@ -627,16 +625,12 @@ impl Model {
     ///
     /// This is the memory-bound phase: we read the entire KV cache for each
     /// token. Benefits from batching multiple sequences to amortize cache reads.
-    pub fn decode_batch(
-        &mut self,
-        tokens: &[u32],
-        gpu: Option<&GpuContext>,
-    ) -> Tensor {
+    pub fn decode_batch(&mut self, tokens: &[u32], gpu: Option<&GpuContext>) -> Tensor {
         let batch = tokens.len();
         let positions: Vec<usize> = (0..batch)
             .map(|b| self.cache.as_ref().map_or(0, |c| c.seq_len(b)))
             .collect();
-        
+
         self.forward_batch_decode(tokens, &positions, gpu)
     }
 
@@ -838,18 +832,9 @@ fn create_dummy_layer(config: &ModelConfig) -> TransformerLayer {
             config.clone(),
         ),
         attn_norm: make_norm(config),
-        ffn_up: Linear::new(
-            Tensor::zeros(&[config.ff_dim(), hidden], DType::F32),
-            None,
-        ),
-        ffn_gate: Linear::new(
-            Tensor::zeros(&[config.ff_dim(), hidden], DType::F32),
-            None,
-        ),
-        ffn_down: Linear::new(
-            Tensor::zeros(&[hidden, config.ff_dim()], DType::F32),
-            None,
-        ),
+        ffn_up: Linear::new(Tensor::zeros(&[config.ff_dim(), hidden], DType::F32), None),
+        ffn_gate: Linear::new(Tensor::zeros(&[config.ff_dim(), hidden], DType::F32), None),
+        ffn_down: Linear::new(Tensor::zeros(&[hidden, config.ff_dim()], DType::F32), None),
         ffn_norm: make_norm(config),
         post_ffn_norm: if config.post_ffn_norm {
             Some(make_norm(config))
@@ -937,7 +922,10 @@ fn ffn_record_activations(
             let up_out = up.forward(normed2);
             let gate_out = gate.forward(normed2);
             let mut gate_gelu = Tensor::zeros(gate_out.shape(), DType::F32);
-            bitllm_tensor::simd::f32_gelu_tanh(gate_out.as_f32_slice(), gate_gelu.as_f32_slice_mut());
+            bitllm_tensor::simd::f32_gelu_tanh(
+                gate_out.as_f32_slice(),
+                gate_gelu.as_f32_slice_mut(),
+            );
             let mut activated = Tensor::zeros(gate_out.shape(), DType::F32);
             bitllm_tensor::simd::f32_mul(
                 gate_gelu.as_f32_slice(),
@@ -1096,12 +1084,8 @@ mod tests {
         let data = create_test_model_safetensors(&config);
         let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
         let mut model = Model::new(config.clone());
-        let stats = crate::loader::load_safetensors_weights(
-            &mut model,
-            &loader,
-            &config,
-            Some("ternary"),
-        );
+        let stats =
+            crate::loader::load_safetensors_weights(&mut model, &loader, &config, Some("ternary"));
         assert_eq!(stats.loaded, 20);
         assert!(model.is_bit1());
 
@@ -1149,8 +1133,7 @@ mod tests {
         let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
 
         let mut model = Model::new(config.clone());
-        let stats =
-            crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
+        let stats = crate::loader::load_safetensors_weights(&mut model, &loader, &config, None);
         assert_eq!(stats.loaded, 20);
         assert!(!model.is_bit1());
 
@@ -1166,12 +1149,8 @@ mod tests {
         let loader = crate::loader::SafeTensorsLoader::from_bytes(&data).unwrap();
 
         let mut model = Model::new(config.clone());
-        let stats = crate::loader::load_safetensors_weights(
-            &mut model,
-            &loader,
-            &config,
-            Some("ternary"),
-        );
+        let stats =
+            crate::loader::load_safetensors_weights(&mut model, &loader, &config, Some("ternary"));
         assert_eq!(stats.loaded, 20);
         assert!(model.is_bit1());
 
@@ -1216,15 +1195,51 @@ mod tests {
             let inter = config.intermediate_size;
 
             let layer_tensors = vec![
-                (format!("model.layers.{}.self_attn.q_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
-                (format!("model.layers.{}.self_attn.k_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
-                (format!("model.layers.{}.self_attn.v_proj.weight", i), vec![0.01; h * kv], vec![kv, h]),
-                (format!("model.layers.{}.self_attn.o_proj.weight", i), vec![0.01; h * kv], vec![h, kv]),
-                (format!("model.layers.{}.mlp.gate_proj.weight", i), vec![0.01; inter * h], vec![inter, h]),
-                (format!("model.layers.{}.mlp.up_proj.weight", i), vec![0.01; inter * h], vec![inter, h]),
-                (format!("model.layers.{}.mlp.down_proj.weight", i), vec![0.01; h * inter], vec![h, inter]),
-                (format!("model.layers.{}.input_layernorm.weight", i), vec![1.0; h], vec![h]),
-                (format!("model.layers.{}.post_attention_layernorm.weight", i), vec![1.0; h], vec![h]),
+                (
+                    format!("model.layers.{}.self_attn.q_proj.weight", i),
+                    vec![0.01; h * kv],
+                    vec![kv, h],
+                ),
+                (
+                    format!("model.layers.{}.self_attn.k_proj.weight", i),
+                    vec![0.01; h * kv],
+                    vec![kv, h],
+                ),
+                (
+                    format!("model.layers.{}.self_attn.v_proj.weight", i),
+                    vec![0.01; h * kv],
+                    vec![kv, h],
+                ),
+                (
+                    format!("model.layers.{}.self_attn.o_proj.weight", i),
+                    vec![0.01; h * kv],
+                    vec![h, kv],
+                ),
+                (
+                    format!("model.layers.{}.mlp.gate_proj.weight", i),
+                    vec![0.01; inter * h],
+                    vec![inter, h],
+                ),
+                (
+                    format!("model.layers.{}.mlp.up_proj.weight", i),
+                    vec![0.01; inter * h],
+                    vec![inter, h],
+                ),
+                (
+                    format!("model.layers.{}.mlp.down_proj.weight", i),
+                    vec![0.01; h * inter],
+                    vec![h, inter],
+                ),
+                (
+                    format!("model.layers.{}.input_layernorm.weight", i),
+                    vec![1.0; h],
+                    vec![h],
+                ),
+                (
+                    format!("model.layers.{}.post_attention_layernorm.weight", i),
+                    vec![1.0; h],
+                    vec![h],
+                ),
             ];
             tensors.extend(layer_tensors);
         }

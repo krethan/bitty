@@ -1,7 +1,7 @@
-use std::hint::black_box;
 use bitllm_quantization::scheme::QuantizedTensor;
 use bitllm_quantization::ternary::{ternary_dequantize, ternary_quantize};
 use bitllm_tensor::{DType, Tensor};
+use std::hint::black_box;
 
 use crate::helpers::{print_throughput_full, time_iters};
 
@@ -60,5 +60,3 @@ pub fn bench_quantization_throughput() {
         println!();
     }
 }
-
-

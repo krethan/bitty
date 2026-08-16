@@ -5,7 +5,6 @@ use bitllm_tensor::simd;
 use bitllm_tensor::{DType, Tensor};
 use std::cell::RefCell;
 
-
 /// Precomputed RoPE cos/sin table for efficient lookups.
 pub struct RoPECache {
     pub cos: Vec<f32>,
@@ -21,7 +20,12 @@ impl RoPECache {
         Self::with_scaling(max_seq_len, head_dim, theta, 1.0)
     }
 
-    pub fn with_scaling(max_seq_len: usize, head_dim: usize, theta: f32, scaling_factor: f32) -> Self {
+    pub fn with_scaling(
+        max_seq_len: usize,
+        head_dim: usize,
+        theta: f32,
+        scaling_factor: f32,
+    ) -> Self {
         let half = head_dim / 2;
         let mut cos = vec![0.0f32; max_seq_len * half];
         let mut sin = vec![0.0f32; max_seq_len * half];
@@ -35,7 +39,14 @@ impl RoPECache {
                 sin[pos * half + i] = angle.sin();
             }
         }
-        Self { cos, sin, head_dim, max_seq_len, theta, scaling_factor }
+        Self {
+            cos,
+            sin,
+            head_dim,
+            max_seq_len,
+            theta,
+            scaling_factor,
+        }
     }
 }
 
@@ -60,20 +71,10 @@ impl KvCache {
         head_dim: usize,
     ) -> Self {
         let k = (0..num_layers)
-            .map(|_| {
-                Tensor::zeros(
-                    &[batch, num_kv_heads, max_seq_len, head_dim],
-                    DType::F32,
-                )
-            })
+            .map(|_| Tensor::zeros(&[batch, num_kv_heads, max_seq_len, head_dim], DType::F32))
             .collect();
         let v = (0..num_layers)
-            .map(|_| {
-                Tensor::zeros(
-                    &[batch, num_kv_heads, max_seq_len, head_dim],
-                    DType::F32,
-                )
-            })
+            .map(|_| Tensor::zeros(&[batch, num_kv_heads, max_seq_len, head_dim], DType::F32))
             .collect();
         Self {
             k,
@@ -85,7 +86,14 @@ impl KvCache {
 
     /// Copy a contiguous `[num_heads, seq_len, head_dim]` block into the cache
     /// slot at `position`. `num_heads` must equal the number of KV heads.
-    pub fn update(&mut self, layer_idx: usize, slot: usize, new_k: &Tensor, new_v: &Tensor, position: usize) {
+    pub fn update(
+        &mut self,
+        layer_idx: usize,
+        slot: usize,
+        new_k: &Tensor,
+        new_v: &Tensor,
+        position: usize,
+    ) {
         let num_heads = new_k.shape()[0];
         let seq_len = new_k.shape()[1];
         let head_dim = new_k.shape()[2];
@@ -134,8 +142,8 @@ impl KvCache {
         for (b, &position) in positions.iter().enumerate() {
             for h in 0..num_heads {
                 let src_base = (h * batch + b) * head_dim;
-                let dst_base = (b * cache_num_kv_heads + h) * cache_seq_len * head_dim
-                    + position * head_dim;
+                let dst_base =
+                    (b * cache_num_kv_heads + h) * cache_seq_len * head_dim + position * head_dim;
                 cache_k[dst_base..dst_base + head_dim]
                     .copy_from_slice(&k_data[src_base..src_base + head_dim]);
                 cache_v[dst_base..dst_base + head_dim]
@@ -439,8 +447,7 @@ impl Attention {
         );
 
         let reshaped = sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
-        self.o_proj
-            .forward_gpu(&reshaped, gpu)
+        self.o_proj.forward_gpu(&reshaped, gpu)
     }
 }
 
@@ -464,7 +471,12 @@ pub(crate) fn reshape_for_attention(tensor: &Tensor, num_heads: usize, head_dim:
 
 /// Apply per-head RMSNorm to a reshaped `[num_heads, seq_len, head_dim]`
 /// tensor (Gemma QK-norm). `norm.weight` is `[num_heads, head_dim]`.
-pub(crate) fn apply_qk_norm(x: &mut Tensor, norm: &crate::layers::RmsNorm, num_heads: usize, head_dim: usize) {
+pub(crate) fn apply_qk_norm(
+    x: &mut Tensor,
+    norm: &crate::layers::RmsNorm,
+    num_heads: usize,
+    head_dim: usize,
+) {
     let seq_len = x.shape()[1];
     let w = norm.weight.as_f32_slice();
     let eps = norm.eps;
@@ -721,7 +733,12 @@ pub(crate) fn scaled_dot_product_attention_batched(
 /// interleaving so that row `i` holds every head's vector at index `i`. A plain
 /// row-major reshape of `[num_heads, seq_len, head_dim]` to `[seq_len, hidden]`
 /// would instead group whole heads, scrambling the projections for `seq_len > 1`.
-pub(crate) fn permute_outer_inner(output: &Tensor, outer: usize, inner: usize, dim: usize) -> Tensor {
+pub(crate) fn permute_outer_inner(
+    output: &Tensor,
+    outer: usize,
+    inner: usize,
+    dim: usize,
+) -> Tensor {
     let hidden = outer * dim;
     let mut result = Tensor::zeros(&[inner, hidden], DType::F32);
     let src = output.as_f32_slice();
@@ -881,7 +898,13 @@ pub fn apply_rotary_emb_batch(
     }
 }
 
-fn apply_rotary_inplace_inner(x: &mut Tensor, position: usize, head_dim: usize, theta: f32, cache: Option<&RoPECache>) {
+fn apply_rotary_inplace_inner(
+    x: &mut Tensor,
+    position: usize,
+    head_dim: usize,
+    theta: f32,
+    cache: Option<&RoPECache>,
+) {
     let seq_len = x.shape()[1];
     let num_heads = x.shape()[0];
     let half = head_dim / 2;
@@ -1056,10 +1079,32 @@ mod tests {
         let v = Tensor::from_slice(&[10.0, 20.0, 30.0, 40.0], &[1, num_kv_heads, 2, head_dim]);
 
         let no_cap = super::scaled_dot_product_attention_owned(
-            &q, &k, &v, num_heads, num_kv_heads, head_dim, 1, 2, 0, 1, 1.0, 0.0,
+            &q,
+            &k,
+            &v,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            1,
+            2,
+            0,
+            1,
+            1.0,
+            0.0,
         );
         let capped = super::scaled_dot_product_attention_owned(
-            &q, &k, &v, num_heads, num_kv_heads, head_dim, 1, 2, 0, 1, 1.0, 1.0,
+            &q,
+            &k,
+            &v,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            1,
+            2,
+            0,
+            1,
+            1.0,
+            1.0,
         );
 
         let no = no_cap.as_f32_slice();

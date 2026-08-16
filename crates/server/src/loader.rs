@@ -27,9 +27,9 @@ pub fn load_model(opts: &ModelLoadOptions) -> anyhow::Result<LoadedModel> {
         log::info!("Loading GGUF model from {}", gguf_path);
         let loader = bitllm_runtime::gguf::GgufLoader::load(gguf_path)
             .with_context(|| format!("Failed to load GGUF {}", gguf_path))?;
-        let model_config = loader.config_from_metadata().ok_or_else(|| {
-            anyhow::anyhow!("Could not extract config from GGUF metadata")
-        })?;
+        let model_config = loader
+            .config_from_metadata()
+            .ok_or_else(|| anyhow::anyhow!("Could not extract config from GGUF metadata"))?;
         let name = loader
             .metadata_str("general.name")
             .map(|s| s.to_string())
@@ -65,8 +65,9 @@ pub fn load_model(opts: &ModelLoadOptions) -> anyhow::Result<LoadedModel> {
             if config_path.exists() {
                 let json = std::fs::read_to_string(&config_path)
                     .with_context(|| format!("Failed to read {}", config_path.display()))?;
-                ModelConfig::from_huggingface_json(&json)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse config {}: {}", config_path.display(), e))?
+                ModelConfig::from_huggingface_json(&json).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse config {}: {}", config_path.display(), e)
+                })?
             } else {
                 log::warn!("No config.json found, using tiny_test defaults");
                 ModelConfig::tiny_test()
@@ -87,12 +88,8 @@ pub fn load_model(opts: &ModelLoadOptions) -> anyhow::Result<LoadedModel> {
         );
 
         let mut model = Model::new(model_config.clone());
-        let stats = load_safetensors_weights(
-            &mut model,
-            &loader,
-            &model_config,
-            opts.quantize.as_deref(),
-        );
+        let stats =
+            load_safetensors_weights(&mut model, &loader, &model_config, opts.quantize.as_deref());
         log::info!(
             "Loaded {} tensors, skipped {}",
             stats.loaded,
@@ -280,12 +277,13 @@ mod tests {
         (0..n).map(|i| base + (i as f32) * 0.5).collect()
     }
 
-    fn load_test_model(
-        gguf_bytes: Vec<u8>,
-    ) -> (Model, ModelConfig) {
+    fn load_test_model(gguf_bytes: Vec<u8>) -> (Model, ModelConfig) {
         let dir = std::env::temp_dir().join("bitllm_server_test");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("qwen_regress_{:?}.gguf", std::thread::current().id()));
+        let path = dir.join(format!(
+            "qwen_regress_{:?}.gguf",
+            std::thread::current().id()
+        ));
         std::fs::write(&path, &gguf_bytes).unwrap();
         let loader = GgufLoader::load(&path).unwrap();
         let config = loader
@@ -345,9 +343,18 @@ mod tests {
         assert_eq!(att.o_proj.weight.shape(), &[8, 8]);
         assert_eq!(att.o_proj.weight.as_f32_slice(), &o[..]);
 
-        assert_eq!(att.q_proj.bias.as_ref().unwrap().as_f32_slice(), &q_bias[..]);
-        assert_eq!(att.k_proj.bias.as_ref().unwrap().as_f32_slice(), &k_bias[..]);
-        assert_eq!(att.v_proj.bias.as_ref().unwrap().as_f32_slice(), &v_bias[..]);
+        assert_eq!(
+            att.q_proj.bias.as_ref().unwrap().as_f32_slice(),
+            &q_bias[..]
+        );
+        assert_eq!(
+            att.k_proj.bias.as_ref().unwrap().as_f32_slice(),
+            &k_bias[..]
+        );
+        assert_eq!(
+            att.v_proj.bias.as_ref().unwrap().as_f32_slice(),
+            &v_bias[..]
+        );
     }
 
     #[test]
@@ -396,20 +403,20 @@ mod tests {
             return;
         }
         let json = std::fs::read_to_string(format!("{}/config.json", dir)).unwrap();
-        let config =
-            bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
+        let config = bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
-                .unwrap();
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir)).unwrap();
         let mut model = Model::new(config.clone());
-        let stats =
-            bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
+        let stats = bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
 
         assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);
         assert_eq!(stats.loaded, loader.tensor_names().len());
 
         assert!(config.post_ffn_norm, "gemma2 must use post-FFN norm");
-        assert!(config.one_centered_norm, "gemma2 must use one-centered RMSNorm");
+        assert!(
+            config.one_centered_norm,
+            "gemma2 must use one-centered RMSNorm"
+        );
         assert_eq!(config.attn_logit_softcap, Some(50.0));
         assert_eq!(config.final_logit_softcap, Some(30.0));
 
@@ -428,14 +435,11 @@ mod tests {
             return;
         }
         let json = std::fs::read_to_string(format!("{}/config.json", dir)).unwrap();
-        let config =
-            bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
+        let config = bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
-                .unwrap();
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir)).unwrap();
         let mut model = Model::new(config.clone());
-        let stats =
-            bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
+        let stats = bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
 
         assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);
 
@@ -454,14 +458,11 @@ mod tests {
             return;
         }
         let json = std::fs::read_to_string(format!("{}/config.json", dir)).unwrap();
-        let config =
-            bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
+        let config = bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
-                .unwrap();
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir)).unwrap();
         let mut model = Model::new(config.clone());
-        let stats =
-            bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
+        let stats = bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
 
         assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);
 
@@ -480,14 +481,11 @@ mod tests {
             return;
         }
         let json = std::fs::read_to_string(format!("{}/config.json", dir)).unwrap();
-        let config =
-            bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
+        let config = bitllm_runtime::ModelConfig::from_huggingface_json(&json).unwrap();
         let loader =
-            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir))
-                .unwrap();
+            bitllm_runtime::SafeTensorsLoader::load(format!("{}/model.safetensors", dir)).unwrap();
         let mut model = Model::new(config.clone());
-        let stats =
-            bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
+        let stats = bitllm_runtime::load_safetensors_weights(&mut model, &loader, &config, None);
 
         assert!(stats.skipped.is_empty(), "skipped: {:?}", stats.skipped);
 

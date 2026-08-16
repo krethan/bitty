@@ -135,7 +135,14 @@ impl GpuContext {
         self.rms_norm_with_slice(in_slice, weight, hidden, rows, eps)
     }
 
-    fn rms_norm_with_slice(&self, in_slice: &[f32], weight: &Tensor, hidden: usize, rows: usize, eps: f32) -> Result<Tensor, String> {
+    fn rms_norm_with_slice(
+        &self,
+        in_slice: &[f32],
+        weight: &Tensor,
+        hidden: usize,
+        rows: usize,
+        eps: f32,
+    ) -> Result<Tensor, String> {
         let w_slice = weight.as_f32_slice();
 
         let mut result = Tensor::zeros(&[rows, hidden], DType::F32);
@@ -215,10 +222,7 @@ mod tests {
     #[test]
     fn gpu_matmul_matches_cpu() {
         let Some(ctx) = require_gpu() else { return };
-        let lin = Linear::new(
-            random_tensor(&[8, 6]),
-            Some(random_tensor(&[8])),
-        );
+        let lin = Linear::new(random_tensor(&[8, 6]), Some(random_tensor(&[8])));
         let input = random_tensor(&[5, 6]);
         let cpu = lin.forward(&input);
         let gpu = lin.forward_gpu(&input, Some(&ctx));
@@ -280,7 +284,9 @@ mod tests {
         let mut k_cpu = k.clone();
         apply_rotary_emb_inplace(&mut q_cpu, &mut k_cpu, position, head_dim, theta);
 
-        let (q_gpu, k_gpu) = ctx.rope(&q, &k, num_heads, head_dim, position, theta).unwrap();
+        let (q_gpu, k_gpu) = ctx
+            .rope(&q, &k, num_heads, head_dim, position, theta)
+            .unwrap();
         assert_close(&q_cpu, &q_gpu, 1e-3);
         assert_close(&k_cpu, &k_gpu, 1e-3);
     }
@@ -296,10 +302,8 @@ mod tests {
     }
 
     fn randomize_tiny(model: &mut Model, config: &ModelConfig) {
-        model.embedding.weight =
-            random_tensor(&[config.vocab_size, config.hidden_size]);
-        model.lm_head.weight =
-            random_tensor(&[config.vocab_size, config.hidden_size]);
+        model.embedding.weight = random_tensor(&[config.vocab_size, config.hidden_size]);
+        model.lm_head.weight = random_tensor(&[config.vocab_size, config.hidden_size]);
         model.norm.weight = random_tensor(&[config.hidden_size]);
         let head_dim = config.head_dim();
         let qk_out = config.num_heads * head_dim;
@@ -311,12 +315,9 @@ mod tests {
             layer.attention.k_proj.weight = random_tensor(&[kv_out, config.hidden_size]);
             layer.attention.v_proj.weight = random_tensor(&[kv_out, config.hidden_size]);
             layer.attention.o_proj.weight = random_tensor(&[config.hidden_size, qk_out]);
-            layer.ffn_up.weight =
-                random_tensor(&[config.intermediate_size, config.hidden_size]);
-            layer.ffn_gate.weight =
-                random_tensor(&[config.intermediate_size, config.hidden_size]);
-            layer.ffn_down.weight =
-                random_tensor(&[config.hidden_size, config.intermediate_size]);
+            layer.ffn_up.weight = random_tensor(&[config.intermediate_size, config.hidden_size]);
+            layer.ffn_gate.weight = random_tensor(&[config.intermediate_size, config.hidden_size]);
+            layer.ffn_down.weight = random_tensor(&[config.hidden_size, config.intermediate_size]);
         }
     }
 
@@ -339,7 +340,9 @@ mod tests {
 
         // Second forward: exercise the KV cache path on GPU too. CPU and GPU
         // both prefill 16 tokens, then decode 8 more at position 16.
-        let more: Vec<u32> = (16..24).map(|i| i * 13 % config.vocab_size as u32).collect();
+        let more: Vec<u32> = (16..24)
+            .map(|i| i * 13 % config.vocab_size as u32)
+            .collect();
 
         model.clear_cache();
         let _cpu_prefill = model.forward_hidden(&tokens, 0, None);

@@ -43,13 +43,20 @@ async fn test_health_endpoint() {
     let app = create_router(state);
 
     let response = app
-        .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["status"], "ok");
@@ -63,7 +70,12 @@ async fn test_metrics_endpoint() {
     let app = create_router(state);
 
     let response = app
-        .oneshot(Request::builder().uri("/metrics").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
@@ -73,7 +85,9 @@ async fn test_metrics_endpoint() {
         "text/plain; version=0.0.4; charset=utf-8"
     );
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let text = String::from_utf8_lossy(&body);
 
     assert!(text.contains("bitllm_requests_total"));
@@ -92,13 +106,20 @@ async fn test_get_model_endpoint() {
     let app = create_router(state);
 
     let response = app
-        .oneshot(Request::builder().uri("/v1/model").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/model")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["id"], "test-model");
@@ -112,13 +133,20 @@ async fn test_list_models_endpoint() {
     let app = create_router(state);
 
     let response = app
-        .oneshot(Request::builder().uri("/v1/models").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["object"], "list");
@@ -147,7 +175,9 @@ async fn test_swap_model_invalid_body() {
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert!(json["error"]["message"]
@@ -182,7 +212,9 @@ async fn test_swap_model_with_config() {
 
     assert_eq!(response.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(json["status"], "ok");
@@ -190,10 +222,17 @@ async fn test_swap_model_with_config() {
 
     // Verify the model name was updated
     let response = app
-        .oneshot(Request::builder().uri("/v1/model").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/model")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["id"], "swapped-model");
 }
@@ -241,7 +280,12 @@ async fn test_backpressure_503() {
     // But timing may allow all 3 to queue if the first hasn't started yet
     // At minimum, verify the system handled it gracefully
     assert!(ok_count + rejected_count == 3);
-    assert!(rejected_count >= 1, "Expected at least one 503 rejection, got {} OK and {} rejected", ok_count, rejected_count);
+    assert!(
+        rejected_count >= 1,
+        "Expected at least one 503 rejection, got {} OK and {} rejected",
+        ok_count,
+        rejected_count
+    );
 
     // Verify metrics recorded the rejection
     let metrics_text = state.metrics.render();

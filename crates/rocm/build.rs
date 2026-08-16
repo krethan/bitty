@@ -11,10 +11,7 @@ fn detect_rocm_path() -> Option<String> {
         return Some(path);
     }
     if is_wsl() {
-        let candidates = [
-            "/opt/rocm".to_string(),
-            "/usr/local/rocm".to_string(),
-        ];
+        let candidates = ["/opt/rocm".to_string(), "/usr/local/rocm".to_string()];
         for c in &candidates {
             if std::path::Path::new(&format!("{}/bin/hipcc", c)).exists() {
                 return Some(c.clone());
@@ -37,7 +34,9 @@ fn main() {
                 hipcc
             );
             if is_wsl() {
-                println!("cargo:warning=WSL2 detected: ensure AMD ROCm is installed on the Windows host");
+                println!(
+                    "cargo:warning=WSL2 detected: ensure AMD ROCm is installed on the Windows host"
+                );
                 println!("cargo:warning=and the AMD GPU driver is enabled in WSL2 (dxgkrnl).");
                 println!("cargo:warning=Set ROCM_PATH env var if ROCm is installed in a non-standard location.");
             }

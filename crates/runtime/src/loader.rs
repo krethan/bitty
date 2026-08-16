@@ -340,7 +340,9 @@ impl LlamaWeightMapper {
 
     pub fn map_weight(name: &str, _config: &crate::config::ModelConfig) -> WeightTarget {
         // GGUF-style top-level names
-        if name == "tok_embeddings" || name == "token_embd.weight" || name == "model.embed_tokens.weight"
+        if name == "tok_embeddings"
+            || name == "token_embd.weight"
+            || name == "model.embed_tokens.weight"
         {
             return WeightTarget::Embedding;
         }
@@ -398,20 +400,26 @@ impl LlamaWeightMapper {
                     WeightTarget::AttentionKNorm { layer_idx }
                 }
                 // FFN projections
-                "feed_forward.w1.weight" | "ffn_gate.weight" | "mlp.gate.weight"
+                "feed_forward.w1.weight"
+                | "ffn_gate.weight"
+                | "mlp.gate.weight"
                 | "mlp.gate_proj.weight" => WeightTarget::FfnGate { layer_idx },
-                "feed_forward.w2.weight" | "ffn_down.weight" | "mlp.down.weight"
+                "feed_forward.w2.weight"
+                | "ffn_down.weight"
+                | "mlp.down.weight"
                 | "mlp.down_proj.weight" => WeightTarget::FfnDown { layer_idx },
-                "feed_forward.w3.weight" | "ffn_up.weight" | "mlp.up.weight"
+                "feed_forward.w3.weight"
+                | "ffn_up.weight"
+                | "mlp.up.weight"
                 | "mlp.up_proj.weight" => WeightTarget::FfnUp { layer_idx },
                 // Norms
                 "attention_norm.weight" | "attn_norm.weight" | "input_layernorm.weight" => {
                     WeightTarget::AttnNorm { layer_idx }
                 }
-                "ffn_norm.weight" | "mlp_norm.weight" | "post_attention_layernorm.weight"
-                | "pre_feedforward_layernorm.weight" => {
-                    WeightTarget::FfnNorm { layer_idx }
-                }
+                "ffn_norm.weight"
+                | "mlp_norm.weight"
+                | "post_attention_layernorm.weight"
+                | "pre_feedforward_layernorm.weight" => WeightTarget::FfnNorm { layer_idx },
                 "post_feedforward_layernorm.weight" | "ffn_post_norm.weight" => {
                     WeightTarget::PostFfnNorm { layer_idx }
                 }
@@ -468,33 +476,79 @@ pub enum WeightTarget {
     FinalNormBias,
     LmHead,
     LmHeadBias,
-    AttentionQ { layer_idx: usize },
-    AttentionK { layer_idx: usize },
-    AttentionV { layer_idx: usize },
-    AttentionO { layer_idx: usize },
-    AttentionQBias { layer_idx: usize },
-    AttentionKBias { layer_idx: usize },
-    AttentionVBias { layer_idx: usize },
-    AttentionOBias { layer_idx: usize },
+    AttentionQ {
+        layer_idx: usize,
+    },
+    AttentionK {
+        layer_idx: usize,
+    },
+    AttentionV {
+        layer_idx: usize,
+    },
+    AttentionO {
+        layer_idx: usize,
+    },
+    AttentionQBias {
+        layer_idx: usize,
+    },
+    AttentionKBias {
+        layer_idx: usize,
+    },
+    AttentionVBias {
+        layer_idx: usize,
+    },
+    AttentionOBias {
+        layer_idx: usize,
+    },
     /// Combined GPT-2 `c_attn.weight` — split into q/k/v row-wise.
-    AttentionQkvSplit { layer_idx: usize },
+    AttentionQkvSplit {
+        layer_idx: usize,
+    },
     /// Combined GPT-2 `c_attn.bias` — split into q/k/v biases.
-    AttentionQkvBiasSplit { layer_idx: usize },
+    AttentionQkvBiasSplit {
+        layer_idx: usize,
+    },
     /// Gemma per-head Q/K norm weights.
-    AttentionQNorm { layer_idx: usize },
-    AttentionKNorm { layer_idx: usize },
-    FfnGate { layer_idx: usize },
-    FfnGateBias { layer_idx: usize },
-    FfnDown { layer_idx: usize },
-    FfnDownBias { layer_idx: usize },
-    FfnUp { layer_idx: usize },
-    FfnUpBias { layer_idx: usize },
-    AttnNorm { layer_idx: usize },
-    AttnNormBias { layer_idx: usize },
-    FfnNorm { layer_idx: usize },
-    FfnNormBias { layer_idx: usize },
+    AttentionQNorm {
+        layer_idx: usize,
+    },
+    AttentionKNorm {
+        layer_idx: usize,
+    },
+    FfnGate {
+        layer_idx: usize,
+    },
+    FfnGateBias {
+        layer_idx: usize,
+    },
+    FfnDown {
+        layer_idx: usize,
+    },
+    FfnDownBias {
+        layer_idx: usize,
+    },
+    FfnUp {
+        layer_idx: usize,
+    },
+    FfnUpBias {
+        layer_idx: usize,
+    },
+    AttnNorm {
+        layer_idx: usize,
+    },
+    AttnNormBias {
+        layer_idx: usize,
+    },
+    FfnNorm {
+        layer_idx: usize,
+    },
+    FfnNormBias {
+        layer_idx: usize,
+    },
     /// Gemma-2 post-feedforward RMSNorm weight.
-    PostFfnNorm { layer_idx: usize },
+    PostFfnNorm {
+        layer_idx: usize,
+    },
     Unknown(String),
 }
 
@@ -549,7 +603,8 @@ impl Gpt2WeightMapper {
 
 impl WeightMapper for Gpt2WeightMapper {
     fn map_weight(name: &str, _config: &crate::config::ModelConfig) -> WeightTarget {
-        if name == "transformer.wte.weight" || name == "wte" || name == "model.embed_tokens.weight" {
+        if name == "transformer.wte.weight" || name == "wte" || name == "model.embed_tokens.weight"
+        {
             return WeightTarget::Embedding;
         }
         if name == "transformer.wpe.weight" || name == "wpe" {
@@ -664,20 +719,32 @@ impl WeightMapper for PhiWeightMapper {
         if let Some(layer_idx) = layer_idx {
             let weight_name = Self::strip_phi_layer_prefix(name);
             return match weight_name.as_str() {
-                "attn.q_proj.weight" | "self_attn.q_proj.weight" => WeightTarget::AttentionQ { layer_idx },
-                "attn.q_proj.bias" | "self_attn.q_proj.bias" => WeightTarget::AttentionQBias { layer_idx },
-                "attn.k_proj.weight" | "self_attn.k_proj.weight" => WeightTarget::AttentionK { layer_idx },
-                "attn.k_proj.bias" | "self_attn.k_proj.bias" => WeightTarget::AttentionKBias { layer_idx },
-                "attn.v_proj.weight" | "self_attn.v_proj.weight" => WeightTarget::AttentionV { layer_idx },
-                "attn.v_proj.bias" | "self_attn.v_proj.bias" => WeightTarget::AttentionVBias { layer_idx },
-                "attn.dense.weight" | "attn.o_proj.weight" | "self_attn.o_proj.weight"
-                | "self_attn.dense.weight" => {
-                    WeightTarget::AttentionO { layer_idx }
+                "attn.q_proj.weight" | "self_attn.q_proj.weight" => {
+                    WeightTarget::AttentionQ { layer_idx }
                 }
-                "attn.dense.bias" | "attn.o_proj.bias" | "self_attn.o_proj.bias"
-                | "self_attn.dense.bias" => {
-                    WeightTarget::AttentionOBias { layer_idx }
+                "attn.q_proj.bias" | "self_attn.q_proj.bias" => {
+                    WeightTarget::AttentionQBias { layer_idx }
                 }
+                "attn.k_proj.weight" | "self_attn.k_proj.weight" => {
+                    WeightTarget::AttentionK { layer_idx }
+                }
+                "attn.k_proj.bias" | "self_attn.k_proj.bias" => {
+                    WeightTarget::AttentionKBias { layer_idx }
+                }
+                "attn.v_proj.weight" | "self_attn.v_proj.weight" => {
+                    WeightTarget::AttentionV { layer_idx }
+                }
+                "attn.v_proj.bias" | "self_attn.v_proj.bias" => {
+                    WeightTarget::AttentionVBias { layer_idx }
+                }
+                "attn.dense.weight"
+                | "attn.o_proj.weight"
+                | "self_attn.o_proj.weight"
+                | "self_attn.dense.weight" => WeightTarget::AttentionO { layer_idx },
+                "attn.dense.bias"
+                | "attn.o_proj.bias"
+                | "self_attn.o_proj.bias"
+                | "self_attn.dense.bias" => WeightTarget::AttentionOBias { layer_idx },
                 "mlp.fc1.weight" | "mlp.gate_proj.weight" => WeightTarget::FfnUp { layer_idx },
                 "mlp.fc1.bias" | "mlp.gate_proj.bias" => WeightTarget::FfnUpBias { layer_idx },
                 "mlp.fc2.weight" | "mlp.down_proj.weight" => WeightTarget::FfnDown { layer_idx },
@@ -1189,10 +1256,7 @@ mod tests {
             WeightTarget::LmHead
         );
         assert_eq!(
-            LlamaWeightMapper::map_weight(
-                "lm_head.bias",
-                &crate::config::ModelConfig::tiny_test()
-            ),
+            LlamaWeightMapper::map_weight("lm_head.bias", &crate::config::ModelConfig::tiny_test()),
             WeightTarget::LmHeadBias
         );
     }
@@ -1312,8 +1376,8 @@ mod tests {
     #[test]
     fn test_weight_mapper_layer_overflow() {
         let config = crate::config::ModelConfig::tiny_test(); // 2 layers
-        // The mapper parses the index but doesn't validate against model config.
-        // Out-of-range detection happens in load_safetensors_weights (logged + skipped).
+                                                              // The mapper parses the index but doesn't validate against model config.
+                                                              // Out-of-range detection happens in load_safetensors_weights (logged + skipped).
         assert_eq!(
             LlamaWeightMapper::map_weight("model.layers.99.self_attn.q_proj.weight", &config),
             WeightTarget::AttentionQ { layer_idx: 99 }
@@ -1698,29 +1762,53 @@ mod tests {
         assert!(stats.skipped.is_empty());
 
         let emb = model.embedding.weight.as_f32_slice();
-        assert!(emb.iter().all(|&x| (x - 0.2).abs() < 1e-6), "embedding from embed_tokens");
+        assert!(
+            emb.iter().all(|&x| (x - 0.2).abs() < 1e-6),
+            "embedding from embed_tokens"
+        );
 
         let norm = model.norm.weight.as_f32_slice();
-        assert!(norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "final norm from model.norm");
+        assert!(
+            norm.iter().all(|&x| (x - 1.0).abs() < 1e-6),
+            "final norm from model.norm"
+        );
 
         let lm = model.lm_head.weight.as_f32_slice();
-        assert!(lm.iter().all(|&x| (x - 0.3).abs() < 1e-6), "lm_head from lm_head.weight");
+        assert!(
+            lm.iter().all(|&x| (x - 0.3).abs() < 1e-6),
+            "lm_head from lm_head.weight"
+        );
 
         let q = model.layers[0].attention.q_proj.weight.as_f32_slice();
         assert!(q.iter().all(|&x| (x - 0.01).abs() < 1e-6), "q_proj");
 
-        let q_norm = model.layers[0].attention.q_norm.as_ref().unwrap().weight.as_f32_slice();
-        assert!(q_norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "q_norm loaded");
+        let q_norm = model.layers[0]
+            .attention
+            .q_norm
+            .as_ref()
+            .unwrap()
+            .weight
+            .as_f32_slice();
+        assert!(
+            q_norm.iter().all(|&x| (x - 1.0).abs() < 1e-6),
+            "q_norm loaded"
+        );
         assert!(
             model.layers[0].attention.k_norm.is_some(),
             "k_norm slot present with qk_norm enabled"
         );
 
         let gate = model.layers[1].ffn_gate.weight.as_f32_slice();
-        assert!(gate.iter().all(|&x| (x - 0.05).abs() < 1e-6), "ffn_gate from gate_proj");
+        assert!(
+            gate.iter().all(|&x| (x - 0.05).abs() < 1e-6),
+            "ffn_gate from gate_proj"
+        );
 
         let down = model.layers[1].ffn_down.weight.as_f32_slice();
-        assert!(down.iter().all(|&x| (x - 0.07).abs() < 1e-6), "ffn_down from down_proj");
+        assert!(
+            down.iter().all(|&x| (x - 0.07).abs() < 1e-6),
+            "ffn_down from down_proj"
+        );
 
         // Smoke test: a forward pass with QK-norm enabled must run.
         let logits = model.forward(&[0u32, 1, 2]);
@@ -1743,26 +1831,47 @@ mod tests {
 
         // Verify weights landed in the right place.
         let emb = model.embedding.weight.as_f32_slice();
-        assert!(emb.iter().all(|&x| (x - 0.2).abs() < 1e-6), "embedding from wte");
+        assert!(
+            emb.iter().all(|&x| (x - 0.2).abs() < 1e-6),
+            "embedding from wte"
+        );
 
         let norm = model.norm.weight.as_f32_slice();
-        assert!(norm.iter().all(|&x| (x - 1.0).abs() < 1e-6), "final norm from ln_f");
+        assert!(
+            norm.iter().all(|&x| (x - 1.0).abs() < 1e-6),
+            "final norm from ln_f"
+        );
 
         let lm = model.lm_head.weight.as_f32_slice();
-        assert!(lm.iter().all(|&x| (x - 0.3).abs() < 1e-6), "lm_head from lm_head.weight");
+        assert!(
+            lm.iter().all(|&x| (x - 0.3).abs() < 1e-6),
+            "lm_head from lm_head.weight"
+        );
 
         // The first layer's q_proj should carry the c_attn weights.
         let q = model.layers[0].attention.q_proj.weight.as_f32_slice();
-        assert!(q.iter().all(|&x| (x - 0.01).abs() < 1e-6), "q_proj from c_attn");
+        assert!(
+            q.iter().all(|&x| (x - 0.01).abs() < 1e-6),
+            "q_proj from c_attn"
+        );
 
         let o = model.layers[0].attention.o_proj.weight.as_f32_slice();
-        assert!(o.iter().all(|&x| (x - 0.02).abs() < 1e-6), "o_proj from c_proj");
+        assert!(
+            o.iter().all(|&x| (x - 0.02).abs() < 1e-6),
+            "o_proj from c_proj"
+        );
 
         let up = model.layers[1].ffn_up.weight.as_f32_slice();
-        assert!(up.iter().all(|&x| (x - 0.03).abs() < 1e-6), "ffn_up from c_fc");
+        assert!(
+            up.iter().all(|&x| (x - 0.03).abs() < 1e-6),
+            "ffn_up from c_fc"
+        );
 
         let down = model.layers[1].ffn_down.weight.as_f32_slice();
-        assert!(down.iter().all(|&x| (x - 0.04).abs() < 1e-6), "ffn_down from c_proj");
+        assert!(
+            down.iter().all(|&x| (x - 0.04).abs() < 1e-6),
+            "ffn_down from c_proj"
+        );
     }
 
     #[test]
@@ -1776,13 +1885,19 @@ mod tests {
         let stats = load_safetensors_weights(&mut model, &loader, &config, Some("ternary"));
 
         assert_eq!(stats.loaded, 15);
-        assert!(model.bit_layers.is_some(), "quantized layers should be present");
+        assert!(
+            model.bit_layers.is_some(),
+            "quantized layers should be present"
+        );
         assert_eq!(
             model.bit_layers.as_ref().unwrap().len(),
             config.num_layers,
             "all layers quantized"
         );
-        assert!(model.layers.is_empty(), "fp32 layers consumed after quantize");
+        assert!(
+            model.layers.is_empty(),
+            "fp32 layers consumed after quantize"
+        );
     }
 
     #[test]
@@ -1799,13 +1914,11 @@ mod tests {
         assert!(stats.skipped.is_empty());
 
         // Verify a weight was actually set (not zero)
-        let embedding_sum: f32 = model
-            .embedding
-            .weight
-            .as_f32_slice()
-            .iter()
-            .sum();
-        assert!(embedding_sum.abs() > 0.0, "embedding weights should be non-zero");
+        let embedding_sum: f32 = model.embedding.weight.as_f32_slice().iter().sum();
+        assert!(
+            embedding_sum.abs() > 0.0,
+            "embedding weights should be non-zero"
+        );
     }
 
     #[test]
@@ -1990,7 +2103,10 @@ mod tests {
             WeightTarget::AttnNorm { layer_idx: 3 }
         );
         assert_eq!(
-            GemmaWeightMapper::map_weight("model.layers.3.post_attention_layernorm.weight", &config),
+            GemmaWeightMapper::map_weight(
+                "model.layers.3.post_attention_layernorm.weight",
+                &config
+            ),
             WeightTarget::FfnNorm { layer_idx: 3 }
         );
     }

@@ -1,8 +1,11 @@
-use bitllm_tensor::{Tensor, DType};
+use crate::layers::Linear;
 use bitllm_quantization::QuantConfig;
 use bitllm_quantization::QuantizedTensor;
-use bitllm_quantization::{fused_bit1_int8_matmul, fused_bit1_matmul, quantize_grouped_with_outliers, quantize_with_outliers};
-use crate::layers::Linear;
+use bitllm_quantization::{
+    fused_bit1_int8_matmul, fused_bit1_matmul, quantize_grouped_with_outliers,
+    quantize_with_outliers,
+};
+use bitllm_tensor::{DType, Tensor};
 
 /// One-bit (ternary -1/+1) Linear layer.
 /// Weights are stored as packed 1-bit sign values, with per-tensor scale.

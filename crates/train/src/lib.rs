@@ -9,5 +9,5 @@ pub mod qat;
 pub mod training;
 
 pub use lora::{TernaryLoRA, TernaryLoRAConfig};
-pub use qat::{QATConfig, QATModel, mean_sq_error, ste_grad};
+pub use qat::{mean_sq_error, ste_grad, QATConfig, QATModel};
 pub use training::{StochasticFlip, TrainingConfig};

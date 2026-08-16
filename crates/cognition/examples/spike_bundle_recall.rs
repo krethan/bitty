@@ -23,7 +23,9 @@ struct Row {
 /// how well a probe (an exact key, a 10%-noisy key, or a window-bundle of keys
 /// from the same record) recovers the record that contains it.
 fn measure(dims: usize, n: usize, max_items: usize, probes: usize, seed: u64) -> Row {
-    let config_seed = seed ^ (dims as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ (n as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    let config_seed = seed
+        ^ (dims as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ (n as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     let mut rng = StdRng::seed_from_u64(config_seed);
 
     let m = (max_items / n).max(1);
@@ -79,7 +81,11 @@ fn measure(dims: usize, n: usize, max_items: usize, probes: usize, seed: u64) ->
 
 /// Recall the record containing `correct` and return whether the correct
 /// record won, plus (similarity to correct, best similarity to any other).
-fn evaluate(mem: &SparseAssociativeMemory<usize>, query: &HyperVector, correct: usize) -> (bool, f32, f32) {
+fn evaluate(
+    mem: &SparseAssociativeMemory<usize>,
+    query: &HyperVector,
+    correct: usize,
+) -> (bool, f32, f32) {
     let sim_correct = query.similarity(mem.get_key(correct).unwrap());
     let mut best = f32::NEG_INFINITY;
     let mut best_idx = usize::MAX;
@@ -144,12 +150,18 @@ fn print_table(rows: &[Row]) {
 fn main() {
     const DIMS: usize = 1024;
     println!("=== Phase 3 spike: hypervector superposition capacity ===");
-    println!("dims={DIMS} ({} bytes/key)  max items/row={MAX_ITEMS}  probes/row={PROBES}", DIMS / 8);
+    println!(
+        "dims={DIMS} ({} bytes/key)  max items/row={MAX_ITEMS}  probes/row={PROBES}",
+        DIMS / 8
+    );
     println!("query = one of the bundled keys | noise10% = same key, 10% bits flipped | win8 = clean bundle of {WINDOW} keys from the record");
     println!();
 
     let ns: [usize; 9] = [1, 2, 4, 8, 16, 32, 64, 128, 256];
-    let rows: Vec<Row> = ns.iter().map(|&n| measure(DIMS, n, MAX_ITEMS, PROBES, SEED)).collect();
+    let rows: Vec<Row> = ns
+        .iter()
+        .map(|&n| measure(DIMS, n, MAX_ITEMS, PROBES, SEED))
+        .collect();
     print_table(&rows);
 
     let baseline = rows[0].recall_clean;

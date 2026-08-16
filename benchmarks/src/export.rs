@@ -161,7 +161,9 @@ pub fn git_commit_hash() -> Option<String> {
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -214,7 +216,9 @@ pub fn write_csv(export: &BenchmarkExport, dir: &Path) -> io::Result<String> {
     let path = dir.join(&filename);
 
     let mut w = String::new();
-    w.push_str("name,weight_bytes,compression_ratio,cos_sim,rel_rmse_pct,max_err,matmul_ms,tok_per_sec\n");
+    w.push_str(
+        "name,weight_bytes,compression_ratio,cos_sim,rel_rmse_pct,max_err,matmul_ms,tok_per_sec\n",
+    );
     for row in &export.precision {
         w.push_str(&format!(
             "{},{},{:.2},{:.6},{:.4},{:.6},{:.3},{:.2}\n",
@@ -237,7 +241,9 @@ pub fn write_csv(export: &BenchmarkExport, dir: &Path) -> io::Result<String> {
         ));
     }
 
-    w.push_str("\nmode,overall_ppl,echo_ppl,recall_at_1,memory_bytes,dense_bytes,compression_ratio\n");
+    w.push_str(
+        "\nmode,overall_ppl,echo_ppl,recall_at_1,memory_bytes,dense_bytes,compression_ratio\n",
+    );
     for row in &export.memory {
         w.push_str(&format!(
             "{},{:.4},{:.4},{:.4},{},{},{:.2}\n",
@@ -272,7 +278,12 @@ pub fn write_csv(export: &BenchmarkExport, dir: &Path) -> io::Result<String> {
     for row in &export.qat {
         w.push_str(&format!(
             "{},{:.6},{:.6},{:.4},{:.2},{:.2},{}\n",
-            row.name, row.naive_mse, row.qat_mse, row.mse_ratio, row.ppl_naive, row.ppl_qat,
+            row.name,
+            row.naive_mse,
+            row.qat_mse,
+            row.mse_ratio,
+            row.ppl_naive,
+            row.ppl_qat,
             row.steps,
         ));
     }
@@ -281,8 +292,16 @@ pub fn write_csv(export: &BenchmarkExport, dir: &Path) -> io::Result<String> {
     for row in &export.qat_sweep {
         w.push_str(&format!(
             "{},{:.6},{},{:.6},{:.6},{:.4},{:.2},{:.2},{:.6},{:.6}\n",
-            row.format, row.lr, row.steps, row.naive_mse, row.qat_mse, row.mse_ratio,
-            row.ppl_naive, row.ppl_qat, row.train_mse_start, row.train_mse_end,
+            row.format,
+            row.lr,
+            row.steps,
+            row.naive_mse,
+            row.qat_mse,
+            row.mse_ratio,
+            row.ppl_naive,
+            row.ppl_qat,
+            row.train_mse_start,
+            row.train_mse_end,
         ));
     }
 
@@ -290,8 +309,17 @@ pub fn write_csv(export: &BenchmarkExport, dir: &Path) -> io::Result<String> {
     for row in &export.qat_ablation {
         w.push_str(&format!(
             "{},{},{},{:.6},{:.6},{:.4},{:.2},{:.2},{:.2},{:.6},{:.6}\n",
-            row.format, row.ablation, row.projections, row.naive_mse, row.qat_mse, row.mse_ratio,
-            row.mse_improvement_pct, row.ppl_naive, row.ppl_qat, row.train_mse_start, row.train_mse_end,
+            row.format,
+            row.ablation,
+            row.projections,
+            row.naive_mse,
+            row.qat_mse,
+            row.mse_ratio,
+            row.mse_improvement_pct,
+            row.ppl_naive,
+            row.ppl_qat,
+            row.train_mse_start,
+            row.train_mse_end,
         ));
     }
 

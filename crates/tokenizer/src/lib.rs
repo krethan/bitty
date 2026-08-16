@@ -311,7 +311,9 @@ impl BpeTokenizer {
             // `'(?:[sdmt]|ll|ve|re)` — apostrophe contractions, case-insensitive.
             if c == '\'' {
                 if let Some(contraction_len) = Self::contraction_len(&chars, i) {
-                    chunks.push(self.byte_encode(&chars[i..i + contraction_len].iter().collect::<String>()));
+                    chunks.push(
+                        self.byte_encode(&chars[i..i + contraction_len].iter().collect::<String>()),
+                    );
                     i += contraction_len;
                     continue;
                 }
@@ -459,7 +461,10 @@ impl BpeTokenizer {
             }
             flags
         }
-        value.get("pre_tokenizer").map(flags_for).unwrap_or((false, false))
+        value
+            .get("pre_tokenizer")
+            .map(flags_for)
+            .unwrap_or((false, false))
     }
 
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, TokenizerError> {
@@ -624,7 +629,11 @@ impl BpeTokenizer {
 
         // SentencePiece doesn't expose merges in the same way as BPE
         // We create an empty merges list - encoding will use character-level fallback
-        Ok(Self::from_vocab_and_merges_with_config(vocab, Vec::new(), config))
+        Ok(Self::from_vocab_and_merges_with_config(
+            vocab,
+            Vec::new(),
+            config,
+        ))
     }
 }
 
@@ -744,7 +753,9 @@ fn parse_sentencepiece_proto(data: &[u8]) -> Result<Vec<SentencePiecePiece>, Tok
             (_, 1) => {
                 // 64-bit
                 if pos + 8 > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated 64-bit field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated 64-bit field".into(),
+                    ));
                 }
                 pos += 8;
             }
@@ -754,14 +765,18 @@ fn parse_sentencepiece_proto(data: &[u8]) -> Result<Vec<SentencePiecePiece>, Tok
                 pos = new_pos;
                 let len = len as usize;
                 if pos + len > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated length-delimited field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated length-delimited field".into(),
+                    ));
                 }
                 pos += len;
             }
             (_, 5) => {
                 // 32-bit
                 if pos + 4 > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated 32-bit field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated 32-bit field".into(),
+                    ));
                 }
                 pos += 4;
             }
@@ -796,7 +811,9 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
                 pos = new_pos;
                 let len = len as usize;
                 if pos + len > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated piece string".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated piece string".into(),
+                    ));
                 }
                 piece = String::from_utf8_lossy(&data[pos..pos + len]).to_string();
                 pos += len;
@@ -821,7 +838,9 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
             }
             (_, 1) => {
                 if pos + 8 > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated 64-bit field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated 64-bit field".into(),
+                    ));
                 }
                 pos += 8;
             }
@@ -830,13 +849,17 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
                 pos = new_pos;
                 let len = len as usize;
                 if pos + len > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated length-delimited field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated length-delimited field".into(),
+                    ));
                 }
                 pos += len;
             }
             (_, 5) => {
                 if pos + 4 > data.len() {
-                    return Err(TokenizerError::ProtobufError("truncated 32-bit field".into()));
+                    return Err(TokenizerError::ProtobufError(
+                        "truncated 32-bit field".into(),
+                    ));
                 }
                 pos += 4;
             }
@@ -849,10 +872,7 @@ fn parse_piece(data: &[u8]) -> Result<SentencePiecePiece, TokenizerError> {
         }
     }
 
-    Ok(SentencePiecePiece {
-        piece,
-        piece_type,
-    })
+    Ok(SentencePiecePiece { piece, piece_type })
 }
 
 fn read_varint(data: &[u8], mut pos: usize) -> Result<(u64, usize), TokenizerError> {

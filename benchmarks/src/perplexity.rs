@@ -118,7 +118,11 @@ pub(crate) fn char_tokenize(text: &str) -> Vec<u32> {
     text.chars()
         .map(|c| {
             let id = c as u32;
-            debug_assert!(c.is_ascii_graphic() || c == ' ', "corpus char {:?} out of range", c);
+            debug_assert!(
+                c.is_ascii_graphic() || c == ' ',
+                "corpus char {:?} out of range",
+                c
+            );
             id - ' ' as u32
         })
         .collect()
@@ -202,10 +206,26 @@ pub(crate) fn build_synthetic_model(bigram: &[Vec<f64>]) -> Model {
     }
 
     for layer in &mut model.layers {
-        fill_gaussian(&mut layer.attention.q_proj.weight, &mut rng, TRANSFORMER_SCALE);
-        fill_gaussian(&mut layer.attention.k_proj.weight, &mut rng, TRANSFORMER_SCALE);
-        fill_gaussian(&mut layer.attention.v_proj.weight, &mut rng, TRANSFORMER_SCALE);
-        fill_gaussian(&mut layer.attention.o_proj.weight, &mut rng, TRANSFORMER_SCALE);
+        fill_gaussian(
+            &mut layer.attention.q_proj.weight,
+            &mut rng,
+            TRANSFORMER_SCALE,
+        );
+        fill_gaussian(
+            &mut layer.attention.k_proj.weight,
+            &mut rng,
+            TRANSFORMER_SCALE,
+        );
+        fill_gaussian(
+            &mut layer.attention.v_proj.weight,
+            &mut rng,
+            TRANSFORMER_SCALE,
+        );
+        fill_gaussian(
+            &mut layer.attention.o_proj.weight,
+            &mut rng,
+            TRANSFORMER_SCALE,
+        );
         fill_gaussian(&mut layer.ffn_up.weight, &mut rng, TRANSFORMER_SCALE);
         fill_gaussian(&mut layer.ffn_gate.weight, &mut rng, TRANSFORMER_SCALE);
         fill_gaussian(&mut layer.ffn_down.weight, &mut rng, TRANSFORMER_SCALE);
@@ -366,22 +386,14 @@ pub fn bench_perplexity() -> Vec<PerplexityRow> {
     );
     println!("  bit1-ol-a8/FP32 perplexity ratio: {:.4}x", delta_ol_a8);
     println!();
-    println!(
-        "  Reference floor: an untrained model scores ppl = vocab_size ({VOCAB}, uniform)."
-    );
+    println!("  Reference floor: an untrained model scores ppl = vocab_size ({VOCAB}, uniform).");
     println!(
         "  NOTE: the synthetic projections are random noise, so weight-outlier\n\
         \x20       channels mainly matter at the matmul level (see qmatmul tests).\n"
     );
     println!();
 
-    vec![
-        fp32_row,
-        bit1_row,
-        bit1_a8_row,
-        bit1_ol_row,
-        bit1_ol_a8_row,
-    ]
+    vec![fp32_row, bit1_row, bit1_a8_row, bit1_ol_row, bit1_ol_a8_row]
 }
 
 #[cfg(test)]

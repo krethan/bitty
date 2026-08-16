@@ -191,14 +191,10 @@ mod tests {
     fn divergent_draft(config: &ModelConfig) -> Model {
         let mut draft = Model::new(config.clone());
         use bitllm_tensor::DType;
-        draft.lm_head.weight = bitllm_tensor::Tensor::random(
-            &[config.vocab_size, config.hidden_size],
-            DType::F32,
-        );
-        draft.embedding.weight = bitllm_tensor::Tensor::random(
-            &[config.vocab_size, config.hidden_size],
-            DType::F32,
-        );
+        draft.lm_head.weight =
+            bitllm_tensor::Tensor::random(&[config.vocab_size, config.hidden_size], DType::F32);
+        draft.embedding.weight =
+            bitllm_tensor::Tensor::random(&[config.vocab_size, config.hidden_size], DType::F32);
         for layer in draft.layers.iter_mut() {
             let shapes = [
                 layer.attention.q_proj.weight.shape().to_vec(),

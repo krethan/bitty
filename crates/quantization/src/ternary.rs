@@ -37,7 +37,11 @@ pub fn quantize_grouped_with_outliers(
     } else {
         1
     };
-    let num_groups = if group_size == 0 { 1 } else { k.div_ceil(group_size) };
+    let num_groups = if group_size == 0 {
+        1
+    } else {
+        k.div_ceil(group_size)
+    };
 
     let outliers = select_outliers(&src, n, outlier_frac);
 
@@ -157,7 +161,7 @@ fn find_absmax_excluding_range(
 ) -> f32 {
     let data = tensor.as_f32_slice();
     let num_rows = n / k.max(1);
-    
+
     match outliers {
         None => {
             // Fast path: no exclusions, use SIMD per row
@@ -178,7 +182,7 @@ fn find_absmax_excluding_range(
             for &idx in &o.indices {
                 excluded[idx as usize] = true;
             }
-            
+
             let mut max_val = 0.0f32;
             for row in 0..num_rows {
                 for col in lo..hi {
@@ -207,11 +211,10 @@ fn simd_absmax(data: &[f32]) -> f32 {
 
     let mut max_vec = f32x8::splat(0.0);
     let chunks = data.chunks_exact(8);
-    
+
     for chunk in chunks {
         let vec = f32x8::from([
-            chunk[0], chunk[1], chunk[2], chunk[3],
-            chunk[4], chunk[5], chunk[6], chunk[7],
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
         ]);
         max_vec = max_vec.max(vec.abs());
     }
@@ -224,7 +227,7 @@ fn simd_absmax(data: &[f32]) -> f32 {
             max_val = v;
         }
     }
-    
+
     // Handle remainder
     for &v in data.chunks_exact(8).remainder() {
         let abs_v = v.abs();
@@ -232,7 +235,7 @@ fn simd_absmax(data: &[f32]) -> f32 {
             max_val = abs_v;
         }
     }
-    
+
     max_val
 }
 
@@ -387,7 +390,10 @@ mod tests {
         let t = Tensor::from_slice(&data, &[2, 64]);
         let qt = quantize_grouped_with_outliers(&t, 0.0, 32);
         assert_eq!(qt.scales.len(), 2);
-        assert!(qt.scales[0] > 5.0 * qt.scales[1], "group 0 should be much larger");
+        assert!(
+            qt.scales[0] > 5.0 * qt.scales[1],
+            "group 0 should be much larger"
+        );
 
         let reconstructed = ternary_dequantize(&qt);
         for (i, &orig) in data.iter().enumerate() {

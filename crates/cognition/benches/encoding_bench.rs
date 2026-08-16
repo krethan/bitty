@@ -1,4 +1,6 @@
-use bitllm_cognition::{encode_activation_direct, BitHNSW, RandomIndexCodebook, SparseAssociativeMemory};
+use bitllm_cognition::{
+    encode_activation_direct, BitHNSW, RandomIndexCodebook, SparseAssociativeMemory,
+};
 use bitllm_tensor::pnword::PNActivation256;
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -38,9 +40,15 @@ fn bench_encode_throughput(c: &mut Criterion) {
     let p32 = sparse_packet(32, 2);
     let p64 = sparse_packet(64, 3);
 
-    group.bench_function("direct_trit2bit", |b| b.iter(|| encode_activation_direct(&p8)));
+    group.bench_function("direct_trit2bit", |b| {
+        b.iter(|| encode_activation_direct(&p8))
+    });
 
-    for (name, p) in [("random_index_nnz=8", &p8), ("random_index_nnz=32", &p32), ("random_index_nnz=64", &p64)] {
+    for (name, p) in [
+        ("random_index_nnz=8", &p8),
+        ("random_index_nnz=32", &p32),
+        ("random_index_nnz=64", &p64),
+    ] {
         group.bench_function(name, |b| b.iter(|| cb.encode(p)));
     }
 
@@ -56,8 +64,12 @@ fn bench_retrieval(c: &mut Criterion) {
 
     for n in [1024usize, 16384] {
         let cb = RandomIndexCodebook::new(DIMS);
-        let packets: Vec<PNActivation256> = (0..n).map(|i| sparse_packet(16, i as u64 + 1)).collect();
-        let probes: Vec<PNActivation256> = packets.iter().map(|p| noisy_probe(p, 0.75, 0xDEAD_BEEF)).collect();
+        let packets: Vec<PNActivation256> =
+            (0..n).map(|i| sparse_packet(16, i as u64 + 1)).collect();
+        let probes: Vec<PNActivation256> = packets
+            .iter()
+            .map(|p| noisy_probe(p, 0.75, 0xDEAD_BEEF))
+            .collect();
 
         let mut h = BitHNSW::with_params(BitHNSW::new(DIMS), 16, 16, 32);
         for (i, p) in packets.iter().enumerate() {

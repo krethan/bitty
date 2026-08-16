@@ -94,7 +94,11 @@ fn fused_bit1_matmul_single_scale(
                 let mut sum = 0.0f32;
                 for t in 0..k {
                     let idx = j * k + t;
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 { w_scale } else { -w_scale };
+                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                        w_scale
+                    } else {
+                        -w_scale
+                    };
                     sum += input[i * k + t] * w;
                 }
                 out[i * n + j] = sum;
@@ -110,106 +114,108 @@ fn fused_bit1_matmul_single_scale(
     // Parallelize over input rows
     let input_chunks = input.chunks(k);
     let output_chunks = out.chunks_mut(n);
-    
-    input_chunks.zip(output_chunks).for_each(|(in_row, out_row)| {
-        let mut kk = 0;
-        while kk < k {
-            let kk_end = (kk + KB).min(k);
-            let kk_len = kk_end - kk;
 
-            // Process K-tile in groups of 8 elements
-            for chunk_start in (0..kk_len).step_by(8) {
-                let chunk_end = (chunk_start + 8).min(kk_len);
-                let nbits = chunk_end - chunk_start;
+    input_chunks
+        .zip(output_chunks)
+        .for_each(|(in_row, out_row)| {
+            let mut kk = 0;
+            while kk < k {
+                let kk_end = (kk + KB).min(k);
+                let kk_len = kk_end - kk;
 
-                // Pack input signs and compute magnitudes for this group
-                let mut in_byte = 0u8;
-                let mut mag = [0.0f32; 8];
-                let mut mag_total = 0.0f32;
-                for off in 0..nbits {
-                    let val = in_row[kk + chunk_start + off];
-                    if val > 0.0 {
-                        in_byte |= 1 << off;
-                    }
-                    let abs_val = if val >= 0.0 { val } else { -val };
-                    mag[off] = abs_val;
-                    mag_total += abs_val;
-                }
+                // Process K-tile in groups of 8 elements
+                for chunk_start in (0..kk_len).step_by(8) {
+                    let chunk_end = (chunk_start + 8).min(kk_len);
+                    let nbits = chunk_end - chunk_start;
 
-                // Build LUT for this group: for each possible match mask (0..2^nbits-1),
-                // lut[mask] = sum of mag[off] where the mask bit is 1
-                let nlut = 1usize << nbits;
-                let mut lut = [0.0f32; 256];
-                for (off, m) in mag.iter().enumerate().take(nbits) {
-                    let step = 1 << off;
-                    for mask in (step..nlut).rev() {
-                        if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + *m;
-                        }
-                    }
-                }
-
-                // Process up to 4 output neurons at once
-                let mut j = 0;
-                while j < n {
-                    let rem = n - j;
-                    let ncols = rem.min(4);
-
-                    let mut w0 = 0u8;
-                    let mut w1 = 0u8;
-                    let mut w2 = 0u8;
-                    let mut w3 = 0u8;
+                    // Pack input signs and compute magnitudes for this group
+                    let mut in_byte = 0u8;
+                    let mut mag = [0.0f32; 8];
+                    let mut mag_total = 0.0f32;
                     for off in 0..nbits {
-                        let bit_pos = kk + chunk_start + off;
-                        let idx0 = j * k + bit_pos;
-                        if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
-                            w0 |= 1 << off;
+                        let val = in_row[kk + chunk_start + off];
+                        if val > 0.0 {
+                            in_byte |= 1 << off;
                         }
-                        if rem > 1 {
-                            let idx1 = (j + 1) * k + bit_pos;
-                            if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
-                                w1 |= 1 << off;
+                        let abs_val = if val >= 0.0 { val } else { -val };
+                        mag[off] = abs_val;
+                        mag_total += abs_val;
+                    }
+
+                    // Build LUT for this group: for each possible match mask (0..2^nbits-1),
+                    // lut[mask] = sum of mag[off] where the mask bit is 1
+                    let nlut = 1usize << nbits;
+                    let mut lut = [0.0f32; 256];
+                    for (off, m) in mag.iter().enumerate().take(nbits) {
+                        let step = 1 << off;
+                        for mask in (step..nlut).rev() {
+                            if (mask & step) != 0 {
+                                lut[mask] = lut[mask ^ step] + *m;
                             }
+                        }
+                    }
+
+                    // Process up to 4 output neurons at once
+                    let mut j = 0;
+                    while j < n {
+                        let rem = n - j;
+                        let ncols = rem.min(4);
+
+                        let mut w0 = 0u8;
+                        let mut w1 = 0u8;
+                        let mut w2 = 0u8;
+                        let mut w3 = 0u8;
+                        for off in 0..nbits {
+                            let bit_pos = kk + chunk_start + off;
+                            let idx0 = j * k + bit_pos;
+                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                                w0 |= 1 << off;
+                            }
+                            if rem > 1 {
+                                let idx1 = (j + 1) * k + bit_pos;
+                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                    w1 |= 1 << off;
+                                }
+                            }
+                            if rem > 2 {
+                                let idx2 = (j + 2) * k + bit_pos;
+                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                    w2 |= 1 << off;
+                                }
+                            }
+                            if rem > 3 {
+                                let idx3 = (j + 3) * k + bit_pos;
+                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                    w3 |= 1 << off;
+                                }
+                            }
+                        }
+
+                        // XNOR to find matching positions, then LUT-lookup the exact contribution
+                        let chunk_mask = !0u8 >> (8 - nbits);
+                        let match_mask0 = !(in_byte ^ w0) & chunk_mask;
+                        out_row[j] += 2.0 * lut[match_mask0 as usize] - mag_total;
+
+                        if rem > 1 {
+                            let match_mask1 = !(in_byte ^ w1) & chunk_mask;
+                            out_row[j + 1] += 2.0 * lut[match_mask1 as usize] - mag_total;
                         }
                         if rem > 2 {
-                            let idx2 = (j + 2) * k + bit_pos;
-                            if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
-                                w2 |= 1 << off;
-                            }
+                            let match_mask2 = !(in_byte ^ w2) & chunk_mask;
+                            out_row[j + 2] += 2.0 * lut[match_mask2 as usize] - mag_total;
                         }
                         if rem > 3 {
-                            let idx3 = (j + 3) * k + bit_pos;
-                            if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
-                                w3 |= 1 << off;
-                            }
+                            let match_mask3 = !(in_byte ^ w3) & chunk_mask;
+                            out_row[j + 3] += 2.0 * lut[match_mask3 as usize] - mag_total;
                         }
-                    }
 
-                    // XNOR to find matching positions, then LUT-lookup the exact contribution
-                    let chunk_mask = !0u8 >> (8 - nbits);
-                    let match_mask0 = !(in_byte ^ w0) & chunk_mask;
-                    out_row[j] += 2.0 * lut[match_mask0 as usize] - mag_total;
-
-                    if rem > 1 {
-                        let match_mask1 = !(in_byte ^ w1) & chunk_mask;
-                        out_row[j + 1] += 2.0 * lut[match_mask1 as usize] - mag_total;
+                        j += ncols;
                     }
-                    if rem > 2 {
-                        let match_mask2 = !(in_byte ^ w2) & chunk_mask;
-                        out_row[j + 2] += 2.0 * lut[match_mask2 as usize] - mag_total;
-                    }
-                    if rem > 3 {
-                        let match_mask3 = !(in_byte ^ w3) & chunk_mask;
-                        out_row[j + 3] += 2.0 * lut[match_mask3 as usize] - mag_total;
-                    }
-
-                    j += ncols;
                 }
-            }
 
-            kk = kk_end;
-        }
-    });
+                kk = kk_end;
+            }
+        });
 
     if w_scale != 1.0 {
         for v in out.iter_mut() {
@@ -237,7 +243,10 @@ fn fused_bit1_matmul_grouped(
     const KB: usize = 128;
     let data = &weight.data;
     let gs = weight.config.group_size;
-    assert!(gs > 0 && gs.is_multiple_of(8), "grouped kernels require a multiple-of-8 group_size");
+    assert!(
+        gs > 0 && gs.is_multiple_of(8),
+        "grouped kernels require a multiple-of-8 group_size"
+    );
 
     out.fill(0.0);
 
@@ -248,7 +257,11 @@ fn fused_bit1_matmul_grouped(
                 for t in 0..k {
                     let idx = j * k + t;
                     let w_scale = weight.scales[t / gs];
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 { w_scale } else { -w_scale };
+                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                        w_scale
+                    } else {
+                        -w_scale
+                    };
                     sum += input[i * k + t] * w;
                 }
                 out[i * n + j] = sum;
@@ -261,101 +274,106 @@ fn fused_bit1_matmul_grouped(
     // Parallelize over input rows
     let input_chunks = input.chunks(k);
     let output_chunks = out.chunks_mut(n);
-    
-    input_chunks.zip(output_chunks).for_each(|(in_row, out_row)| {
-        let mut kk = 0;
-        while kk < k {
-            let kk_end = (kk + KB).min(k);
-            let kk_len = kk_end - kk;
 
-            for chunk_start in (0..kk_len).step_by(8) {
-                let chunk_end = (chunk_start + 8).min(kk_len);
-                let nbits = chunk_end - chunk_start;
-                let w_scale = weight.scales[(kk + chunk_start) / gs];
+    input_chunks
+        .zip(output_chunks)
+        .for_each(|(in_row, out_row)| {
+            let mut kk = 0;
+            while kk < k {
+                let kk_end = (kk + KB).min(k);
+                let kk_len = kk_end - kk;
 
-                let mut in_byte = 0u8;
-                let mut mag = [0.0f32; 8];
-                let mut mag_total = 0.0f32;
-                for off in 0..nbits {
-                    let val = in_row[kk + chunk_start + off];
-                    if val > 0.0 {
-                        in_byte |= 1 << off;
-                    }
-                    let abs_val = if val >= 0.0 { val } else { -val };
-                    mag[off] = abs_val;
-                    mag_total += abs_val;
-                }
+                for chunk_start in (0..kk_len).step_by(8) {
+                    let chunk_end = (chunk_start + 8).min(kk_len);
+                    let nbits = chunk_end - chunk_start;
+                    let w_scale = weight.scales[(kk + chunk_start) / gs];
 
-                let nlut = 1usize << nbits;
-                let mut lut = [0.0f32; 256];
-                for (off, m) in mag.iter().enumerate().take(nbits) {
-                    let step = 1 << off;
-                    for mask in (step..nlut).rev() {
-                        if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + *m;
-                        }
-                    }
-                }
-
-                let mut j = 0;
-                while j < n {
-                    let rem = n - j;
-                    let ncols = rem.min(4);
-
-                    let mut w0 = 0u8;
-                    let mut w1 = 0u8;
-                    let mut w2 = 0u8;
-                    let mut w3 = 0u8;
+                    let mut in_byte = 0u8;
+                    let mut mag = [0.0f32; 8];
+                    let mut mag_total = 0.0f32;
                     for off in 0..nbits {
-                        let bit_pos = kk + chunk_start + off;
-                        let idx0 = j * k + bit_pos;
-                        if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
-                            w0 |= 1 << off;
+                        let val = in_row[kk + chunk_start + off];
+                        if val > 0.0 {
+                            in_byte |= 1 << off;
                         }
-                        if rem > 1 {
-                            let idx1 = (j + 1) * k + bit_pos;
-                            if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
-                                w1 |= 1 << off;
+                        let abs_val = if val >= 0.0 { val } else { -val };
+                        mag[off] = abs_val;
+                        mag_total += abs_val;
+                    }
+
+                    let nlut = 1usize << nbits;
+                    let mut lut = [0.0f32; 256];
+                    for (off, m) in mag.iter().enumerate().take(nbits) {
+                        let step = 1 << off;
+                        for mask in (step..nlut).rev() {
+                            if (mask & step) != 0 {
+                                lut[mask] = lut[mask ^ step] + *m;
                             }
+                        }
+                    }
+
+                    let mut j = 0;
+                    while j < n {
+                        let rem = n - j;
+                        let ncols = rem.min(4);
+
+                        let mut w0 = 0u8;
+                        let mut w1 = 0u8;
+                        let mut w2 = 0u8;
+                        let mut w3 = 0u8;
+                        for off in 0..nbits {
+                            let bit_pos = kk + chunk_start + off;
+                            let idx0 = j * k + bit_pos;
+                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                                w0 |= 1 << off;
+                            }
+                            if rem > 1 {
+                                let idx1 = (j + 1) * k + bit_pos;
+                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                    w1 |= 1 << off;
+                                }
+                            }
+                            if rem > 2 {
+                                let idx2 = (j + 2) * k + bit_pos;
+                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                    w2 |= 1 << off;
+                                }
+                            }
+                            if rem > 3 {
+                                let idx3 = (j + 3) * k + bit_pos;
+                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                    w3 |= 1 << off;
+                                }
+                            }
+                        }
+
+                        let chunk_mask = !0u8 >> (8 - nbits);
+                        let match_mask0 = !(in_byte ^ w0) & chunk_mask;
+                        out_row[j] += w_scale * (2.0 * lut[match_mask0 as usize] - mag_total);
+
+                        if rem > 1 {
+                            let match_mask1 = !(in_byte ^ w1) & chunk_mask;
+                            out_row[j + 1] +=
+                                w_scale * (2.0 * lut[match_mask1 as usize] - mag_total);
                         }
                         if rem > 2 {
-                            let idx2 = (j + 2) * k + bit_pos;
-                            if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
-                                w2 |= 1 << off;
-                            }
+                            let match_mask2 = !(in_byte ^ w2) & chunk_mask;
+                            out_row[j + 2] +=
+                                w_scale * (2.0 * lut[match_mask2 as usize] - mag_total);
                         }
                         if rem > 3 {
-                            let idx3 = (j + 3) * k + bit_pos;
-                            if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
-                                w3 |= 1 << off;
-                            }
+                            let match_mask3 = !(in_byte ^ w3) & chunk_mask;
+                            out_row[j + 3] +=
+                                w_scale * (2.0 * lut[match_mask3 as usize] - mag_total);
                         }
-                    }
 
-                    let chunk_mask = !0u8 >> (8 - nbits);
-                    let match_mask0 = !(in_byte ^ w0) & chunk_mask;
-                    out_row[j] += w_scale * (2.0 * lut[match_mask0 as usize] - mag_total);
-
-                    if rem > 1 {
-                        let match_mask1 = !(in_byte ^ w1) & chunk_mask;
-                        out_row[j + 1] += w_scale * (2.0 * lut[match_mask1 as usize] - mag_total);
+                        j += ncols;
                     }
-                    if rem > 2 {
-                        let match_mask2 = !(in_byte ^ w2) & chunk_mask;
-                        out_row[j + 2] += w_scale * (2.0 * lut[match_mask2 as usize] - mag_total);
-                    }
-                    if rem > 3 {
-                        let match_mask3 = !(in_byte ^ w3) & chunk_mask;
-                        out_row[j + 3] += w_scale * (2.0 * lut[match_mask3 as usize] - mag_total);
-                    }
-
-                    j += ncols;
                 }
-            }
 
-            kk = kk_end;
-        }
-    });
+                kk = kk_end;
+            }
+        });
 
     apply_outlier_correction(out, input, weight, m, k, n, None, None);
 }
@@ -404,126 +422,132 @@ fn fused_bit1_int8_matmul_single_scale(
     let w_scale = weight.scales[0];
 
     // Parallelize over input rows
-    input.par_chunks(k).zip(out.par_chunks_mut(n)).for_each(|(in_row, out_row)| {
-        // Per-token absmax int8 activation scale.
-        let mut max_abs = 0.0f32;
-        for a in in_row.iter().take(k).map(|v| v.abs()) {
-            if a > max_abs {
-                max_abs = a;
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            // Per-token absmax int8 activation scale.
+            let mut max_abs = 0.0f32;
+            for a in in_row.iter().take(k).map(|v| v.abs()) {
+                if a > max_abs {
+                    max_abs = a;
+                }
             }
-        }
-        let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
-        let inv_scale = 1.0 / act_scale;
+            let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
+            let inv_scale = 1.0 / act_scale;
 
-        let mut acc = vec![0i32; n];
-        let mut lut = [0i32; 256];
+            let mut acc = vec![0i32; n];
+            let mut lut = [0i32; 256];
 
-        let mut kk = 0;
-        while kk < k {
-            let kk_end = (kk + KB).min(k);
-            let kk_len = kk_end - kk;
+            let mut kk = 0;
+            while kk < k {
+                let kk_end = (kk + KB).min(k);
+                let kk_len = kk_end - kk;
 
-            for chunk_start in (0..kk_len).step_by(8) {
-                let chunk_end = (chunk_start + 8).min(kk_len);
-                let nbits = chunk_end - chunk_start;
+                for chunk_start in (0..kk_len).step_by(8) {
+                    let chunk_end = (chunk_start + 8).min(kk_len);
+                    let nbits = chunk_end - chunk_start;
 
-                // Quantize this group of inputs to int8, pack signs, collect
-                // integer magnitudes for the LUT.
-                let mut in_byte = 0u8;
-                let mut mag = [0i32; 8];
-                let mut mag_total = 0i32;
-                for off in 0..nbits {
-                    let v = in_row[kk + chunk_start + off] * inv_scale;
-                    let q = (v.round() as i32).clamp(-127, 127);
-                    if q > 0 {
-                        in_byte |= 1 << off;
-                    }
-                    let m_abs = if q >= 0 { q } else { -q };
-                    mag[off] = m_abs;
-                    mag_total += m_abs;
-                }
-
-                let nlut = 1usize << nbits;
-                lut[0] = 0;
-                for (off, m) in mag.iter().enumerate().take(nbits) {
-                    let step = 1 << off;
-                    for mask in (step..nlut).rev() {
-                        if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + *m;
-                        }
-                    }
-                }
-
-                let chunk_mask = !0u8 >> (8 - nbits);
-                let mut j = 0;
-                while j < n {
-                    let rem = n - j;
-                    let ncols = rem.min(4);
-
-                    let mut w0 = 0u8;
-                    let mut w1 = 0u8;
-                    let mut w2 = 0u8;
-                    let mut w3 = 0u8;
+                    // Quantize this group of inputs to int8, pack signs, collect
+                    // integer magnitudes for the LUT.
+                    let mut in_byte = 0u8;
+                    let mut mag = [0i32; 8];
+                    let mut mag_total = 0i32;
                     for off in 0..nbits {
-                        let bit_pos = kk + chunk_start + off;
-                        let idx0 = j * k + bit_pos;
-                        if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
-                            w0 |= 1 << off;
+                        let v = in_row[kk + chunk_start + off] * inv_scale;
+                        let q = (v.round() as i32).clamp(-127, 127);
+                        if q > 0 {
+                            in_byte |= 1 << off;
                         }
-                        if rem > 1 {
-                            let idx1 = (j + 1) * k + bit_pos;
-                            if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
-                                w1 |= 1 << off;
+                        let m_abs = if q >= 0 { q } else { -q };
+                        mag[off] = m_abs;
+                        mag_total += m_abs;
+                    }
+
+                    let nlut = 1usize << nbits;
+                    lut[0] = 0;
+                    for (off, m) in mag.iter().enumerate().take(nbits) {
+                        let step = 1 << off;
+                        for mask in (step..nlut).rev() {
+                            if (mask & step) != 0 {
+                                lut[mask] = lut[mask ^ step] + *m;
                             }
+                        }
+                    }
+
+                    let chunk_mask = !0u8 >> (8 - nbits);
+                    let mut j = 0;
+                    while j < n {
+                        let rem = n - j;
+                        let ncols = rem.min(4);
+
+                        let mut w0 = 0u8;
+                        let mut w1 = 0u8;
+                        let mut w2 = 0u8;
+                        let mut w3 = 0u8;
+                        for off in 0..nbits {
+                            let bit_pos = kk + chunk_start + off;
+                            let idx0 = j * k + bit_pos;
+                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                                w0 |= 1 << off;
+                            }
+                            if rem > 1 {
+                                let idx1 = (j + 1) * k + bit_pos;
+                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                    w1 |= 1 << off;
+                                }
+                            }
+                            if rem > 2 {
+                                let idx2 = (j + 2) * k + bit_pos;
+                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                    w2 |= 1 << off;
+                                }
+                            }
+                            if rem > 3 {
+                                let idx3 = (j + 3) * k + bit_pos;
+                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                    w3 |= 1 << off;
+                                }
+                            }
+                        }
+
+                        acc[j] += 2 * lut[(!(in_byte ^ w0) & chunk_mask) as usize] - mag_total;
+                        if rem > 1 {
+                            acc[j + 1] +=
+                                2 * lut[(!(in_byte ^ w1) & chunk_mask) as usize] - mag_total;
                         }
                         if rem > 2 {
-                            let idx2 = (j + 2) * k + bit_pos;
-                            if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
-                                w2 |= 1 << off;
-                            }
+                            acc[j + 2] +=
+                                2 * lut[(!(in_byte ^ w2) & chunk_mask) as usize] - mag_total;
                         }
                         if rem > 3 {
-                            let idx3 = (j + 3) * k + bit_pos;
-                            if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
-                                w3 |= 1 << off;
-                            }
+                            acc[j + 3] +=
+                                2 * lut[(!(in_byte ^ w3) & chunk_mask) as usize] - mag_total;
                         }
-                    }
 
-                    acc[j] += 2 * lut[(!(in_byte ^ w0) & chunk_mask) as usize] - mag_total;
-                    if rem > 1 {
-                        acc[j + 1] += 2 * lut[(!(in_byte ^ w1) & chunk_mask) as usize] - mag_total;
+                        j += ncols;
                     }
-                    if rem > 2 {
-                        acc[j + 2] += 2 * lut[(!(in_byte ^ w2) & chunk_mask) as usize] - mag_total;
-                    }
-                    if rem > 3 {
-                        acc[j + 3] += 2 * lut[(!(in_byte ^ w3) & chunk_mask) as usize] - mag_total;
-                    }
-
-                    j += ncols;
                 }
+
+                kk = kk_end;
             }
 
-            kk = kk_end;
-        }
+            let scale = act_scale * w_scale;
+            for j in 0..n {
+                out_row[j] = acc[j] as f32 * scale;
+            }
 
-        let scale = act_scale * w_scale;
-        for j in 0..n {
-            out_row[j] = acc[j] as f32 * scale;
-        }
-
-        apply_outlier_correction(
-            out_row,
-            in_row,
-            weight,
-            1,
-            k,
-            n,
-            Some(act_scale),
-            Some(inv_scale),
-        );
-    });
+            apply_outlier_correction(
+                out_row,
+                in_row,
+                weight,
+                1,
+                k,
+                n,
+                Some(act_scale),
+                Some(inv_scale),
+            );
+        });
 }
 
 /// Group-wise scale variant of [`fused_bit1_int8_matmul`].
@@ -543,150 +567,168 @@ fn fused_bit1_int8_matmul_grouped(
     const KB: usize = 128;
     let data = &weight.data;
     let gs = weight.config.group_size;
-    assert!(gs > 0 && gs.is_multiple_of(8), "grouped kernels require a multiple-of-8 group_size");
+    assert!(
+        gs > 0 && gs.is_multiple_of(8),
+        "grouped kernels require a multiple-of-8 group_size"
+    );
 
     out.fill(0.0);
 
     // Parallelize over input rows
-    input.par_chunks(k).zip(out.par_chunks_mut(n)).for_each(|(in_row, out_row)| {
-        let mut max_abs = 0.0f32;
-        for a in in_row.iter().take(k).map(|v| v.abs()) {
-            if a > max_abs {
-                max_abs = a;
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            let mut max_abs = 0.0f32;
+            for a in in_row.iter().take(k).map(|v| v.abs()) {
+                if a > max_abs {
+                    max_abs = a;
+                }
             }
-        }
-        let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
-        let inv_scale = 1.0 / act_scale;
+            let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
+            let inv_scale = 1.0 / act_scale;
 
-        let mut acc = vec![0i32; n];
-        let mut lut = [0i32; 256];
-        let mut cur_g = 0;
+            let mut acc = vec![0i32; n];
+            let mut lut = [0i32; 256];
+            let mut cur_g = 0;
 
-        let mut kk = 0;
-        while kk < k {
-            let kk_end = (kk + KB).min(k);
-            let kk_len = kk_end - kk;
+            let mut kk = 0;
+            while kk < k {
+                let kk_end = (kk + KB).min(k);
+                let kk_len = kk_end - kk;
 
-            for chunk_start in (0..kk_len).step_by(8) {
-                let g = (kk + chunk_start) / gs;
-                if g != cur_g {
-                    for j in 0..n {
-                        out_row[j] += acc[j] as f32 * weight.scales[cur_g];
-                    }
-                    acc.fill(0);
-                    cur_g = g;
-                }
-
-                let chunk_end = (chunk_start + 8).min(kk_len);
-                let nbits = chunk_end - chunk_start;
-
-                let mut in_byte = 0u8;
-                let mut mag = [0i32; 8];
-                let mut mag_total = 0i32;
-                for off in 0..nbits {
-                    let v = in_row[kk + chunk_start + off] * inv_scale;
-                    let q = (v.round() as i32).clamp(-127, 127);
-                    if q > 0 {
-                        in_byte |= 1 << off;
-                    }
-                    let m_abs = if q >= 0 { q } else { -q };
-                    mag[off] = m_abs;
-                    mag_total += m_abs;
-                }
-
-                let nlut = 1usize << nbits;
-                lut[0] = 0;
-                for (off, m) in mag.iter().enumerate().take(nbits) {
-                    let step = 1 << off;
-                    for mask in (step..nlut).rev() {
-                        if (mask & step) != 0 {
-                            lut[mask] = lut[mask ^ step] + *m;
+                for chunk_start in (0..kk_len).step_by(8) {
+                    let g = (kk + chunk_start) / gs;
+                    if g != cur_g {
+                        for j in 0..n {
+                            out_row[j] += acc[j] as f32 * weight.scales[cur_g];
                         }
+                        acc.fill(0);
+                        cur_g = g;
                     }
-                }
 
-                let chunk_mask = !0u8 >> (8 - nbits);
-                let mut j = 0;
-                while j < n {
-                    let rem = n - j;
-                    let ncols = rem.min(4);
+                    let chunk_end = (chunk_start + 8).min(kk_len);
+                    let nbits = chunk_end - chunk_start;
 
-                    let mut w0 = 0u8;
-                    let mut w1 = 0u8;
-                    let mut w2 = 0u8;
-                    let mut w3 = 0u8;
+                    let mut in_byte = 0u8;
+                    let mut mag = [0i32; 8];
+                    let mut mag_total = 0i32;
                     for off in 0..nbits {
-                        let bit_pos = kk + chunk_start + off;
-                        let idx0 = j * k + bit_pos;
-                        if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
-                            w0 |= 1 << off;
+                        let v = in_row[kk + chunk_start + off] * inv_scale;
+                        let q = (v.round() as i32).clamp(-127, 127);
+                        if q > 0 {
+                            in_byte |= 1 << off;
                         }
-                        if rem > 1 {
-                            let idx1 = (j + 1) * k + bit_pos;
-                            if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
-                                w1 |= 1 << off;
+                        let m_abs = if q >= 0 { q } else { -q };
+                        mag[off] = m_abs;
+                        mag_total += m_abs;
+                    }
+
+                    let nlut = 1usize << nbits;
+                    lut[0] = 0;
+                    for (off, m) in mag.iter().enumerate().take(nbits) {
+                        let step = 1 << off;
+                        for mask in (step..nlut).rev() {
+                            if (mask & step) != 0 {
+                                lut[mask] = lut[mask ^ step] + *m;
                             }
+                        }
+                    }
+
+                    let chunk_mask = !0u8 >> (8 - nbits);
+                    let mut j = 0;
+                    while j < n {
+                        let rem = n - j;
+                        let ncols = rem.min(4);
+
+                        let mut w0 = 0u8;
+                        let mut w1 = 0u8;
+                        let mut w2 = 0u8;
+                        let mut w3 = 0u8;
+                        for off in 0..nbits {
+                            let bit_pos = kk + chunk_start + off;
+                            let idx0 = j * k + bit_pos;
+                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                                w0 |= 1 << off;
+                            }
+                            if rem > 1 {
+                                let idx1 = (j + 1) * k + bit_pos;
+                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                    w1 |= 1 << off;
+                                }
+                            }
+                            if rem > 2 {
+                                let idx2 = (j + 2) * k + bit_pos;
+                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                    w2 |= 1 << off;
+                                }
+                            }
+                            if rem > 3 {
+                                let idx3 = (j + 3) * k + bit_pos;
+                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                    w3 |= 1 << off;
+                                }
+                            }
+                        }
+
+                        acc[j] += 2 * lut[(!(in_byte ^ w0) & chunk_mask) as usize] - mag_total;
+                        if rem > 1 {
+                            acc[j + 1] +=
+                                2 * lut[(!(in_byte ^ w1) & chunk_mask) as usize] - mag_total;
                         }
                         if rem > 2 {
-                            let idx2 = (j + 2) * k + bit_pos;
-                            if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
-                                w2 |= 1 << off;
-                            }
+                            acc[j + 2] +=
+                                2 * lut[(!(in_byte ^ w2) & chunk_mask) as usize] - mag_total;
                         }
                         if rem > 3 {
-                            let idx3 = (j + 3) * k + bit_pos;
-                            if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
-                                w3 |= 1 << off;
-                            }
+                            acc[j + 3] +=
+                                2 * lut[(!(in_byte ^ w3) & chunk_mask) as usize] - mag_total;
                         }
-                    }
 
-                    acc[j] += 2 * lut[(!(in_byte ^ w0) & chunk_mask) as usize] - mag_total;
-                    if rem > 1 {
-                        acc[j + 1] += 2 * lut[(!(in_byte ^ w1) & chunk_mask) as usize] - mag_total;
+                        j += ncols;
                     }
-                    if rem > 2 {
-                        acc[j + 2] += 2 * lut[(!(in_byte ^ w2) & chunk_mask) as usize] - mag_total;
-                    }
-                    if rem > 3 {
-                        acc[j + 3] += 2 * lut[(!(in_byte ^ w3) & chunk_mask) as usize] - mag_total;
-                    }
-
-                    j += ncols;
                 }
+
+                kk = kk_end;
             }
 
-            kk = kk_end;
-        }
+            for j in 0..n {
+                out_row[j] += acc[j] as f32 * weight.scales[cur_g];
+            }
+            for o in out_row.iter_mut().take(n) {
+                *o *= act_scale;
+            }
 
-        for j in 0..n {
-            out_row[j] += acc[j] as f32 * weight.scales[cur_g];
-        }
-        for o in out_row.iter_mut().take(n) {
-            *o *= act_scale;
-        }
-
-        apply_outlier_correction(
-            out_row,
-            in_row,
-            weight,
-            1,
-            k,
-            n,
-            Some(act_scale),
-            Some(inv_scale),
-        );
-    });
+            apply_outlier_correction(
+                out_row,
+                in_row,
+                weight,
+                1,
+                k,
+                n,
+                Some(act_scale),
+                Some(inv_scale),
+            );
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ternary::{quantize_grouped_with_outliers, quantize_with_outliers, ternary_quantize};
+    use crate::ternary::{
+        quantize_grouped_with_outliers, quantize_with_outliers, ternary_quantize,
+    };
     use bitllm_tensor::Tensor;
 
     /// Reference BIT1 matmul using float operations (unpack each bit)
-    fn bit1_matmul_ref(input: &[f32], weight: &QuantizedTensor, out: &mut [f32], m: usize, k: usize, n: usize) {
+    fn bit1_matmul_ref(
+        input: &[f32],
+        weight: &QuantizedTensor,
+        out: &mut [f32],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
         let data = &weight.data;
         let scale = weight.scales[0];
         for i in 0..m {
@@ -694,7 +736,11 @@ mod tests {
                 let mut sum = 0.0f32;
                 for t in 0..k {
                     let idx = j * k + t;
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 { scale } else { -scale };
+                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                        scale
+                    } else {
+                        -scale
+                    };
                     sum += input[i * k + t] * w;
                 }
                 out[i * n + j] = sum;
@@ -703,7 +749,14 @@ mod tests {
     }
 
     /// Plain fp32 matmul over an f32 weight slice (exact reference).
-    fn fp32_matmul_ref(input: &[f32], weight: &[f32], out: &mut [f32], m: usize, k: usize, n: usize) {
+    fn fp32_matmul_ref(
+        input: &[f32],
+        weight: &[f32],
+        out: &mut [f32],
+        m: usize,
+        k: usize,
+        n: usize,
+    ) {
         for i in 0..m {
             for j in 0..n {
                 let mut sum = 0.0f64;
@@ -842,7 +895,10 @@ mod tests {
                 assert!(
                     diff < 1e-2,
                     "int8+outlier mismatch at i={},j={}: fused {} ref {}",
-                    i, j, fused[i * n + j], ref_val
+                    i,
+                    j,
+                    fused[i * n + j],
+                    ref_val
                 );
             }
         }
@@ -861,25 +917,51 @@ mod tests {
         let mut result = vec![0.0f32; m * n];
         fused_bit1_matmul(a.as_f32_slice(), &b_q, &mut result, m, k, n);
 
-        assert!((result[0] - 5.0).abs() < 1e-4, "got {} expected 5.0", result[0]);
-        assert!((result[1] - (-5.0)).abs() < 1e-4, "got {} expected -5.0", result[1]);
+        assert!(
+            (result[0] - 5.0).abs() < 1e-4,
+            "got {} expected 5.0",
+            result[0]
+        );
+        assert!(
+            (result[1] - (-5.0)).abs() < 1e-4,
+            "got {} expected -5.0",
+            result[1]
+        );
     }
 
     #[test]
     fn test_fused_bit1_matches_reference_various_sizes() {
         let sizes = vec![
-            (1, 1), (3, 3), (7, 7), (8, 8), (9, 9),
-            (10, 10), (15, 15), (16, 16), (17, 17),
-            (32, 32), (64, 64), (128, 128),
-            (5, 3), (3, 5), (10, 20), (20, 10),
-            (64, 128), (128, 64),
-            (100, 100), (200, 200),
+            (1, 1),
+            (3, 3),
+            (7, 7),
+            (8, 8),
+            (9, 9),
+            (10, 10),
+            (15, 15),
+            (16, 16),
+            (17, 17),
+            (32, 32),
+            (64, 64),
+            (128, 128),
+            (5, 3),
+            (3, 5),
+            (10, 20),
+            (20, 10),
+            (64, 128),
+            (128, 64),
+            (100, 100),
+            (200, 200),
         ];
 
         for &(k, n) in &sizes {
             let m = 3;
-            let input_data: Vec<f32> = (0..m * k).map(|i| (i as f32 - (m * k / 2) as f32) / (m * k) as f32 * 2.0).collect();
-            let weight_data: Vec<f32> = (0..n * k).map(|i| (i as f32 - (n * k / 2) as f32) / (n * k) as f32 * 2.0).collect();
+            let input_data: Vec<f32> = (0..m * k)
+                .map(|i| (i as f32 - (m * k / 2) as f32) / (m * k) as f32 * 2.0)
+                .collect();
+            let weight_data: Vec<f32> = (0..n * k)
+                .map(|i| (i as f32 - (n * k / 2) as f32) / (n * k) as f32 * 2.0)
+                .collect();
 
             let w_tensor = Tensor::from_slice(&weight_data, &[n, k]);
             let w_q = ternary_quantize(&w_tensor);
@@ -895,7 +977,11 @@ mod tests {
                 assert!(
                     diff < 1e-3,
                     "Mismatch at size k={}, n={}, idx={}: XNOR got {}, ref got {}",
-                    k, n, idx, xnor_result[idx], ref_result[idx]
+                    k,
+                    n,
+                    idx,
+                    xnor_result[idx],
+                    ref_result[idx]
                 );
             }
         }
@@ -923,7 +1009,9 @@ mod tests {
             assert!(
                 diff < 1e-3,
                 "Non-byte-aligned mismatch at idx={}: XNOR got {}, ref got {}",
-                idx, xnor_result[idx], ref_result[idx]
+                idx,
+                xnor_result[idx],
+                ref_result[idx]
             );
         }
     }
@@ -935,7 +1023,9 @@ mod tests {
         let m = 1;
 
         let input_data = vec![1.0f32; k];
-        let weight_data: Vec<f32> = (0..n * k).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let weight_data: Vec<f32> = (0..n * k)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
 
         let w_tensor = Tensor::from_slice(&weight_data, &[n, k]);
         let w_q = ternary_quantize(&w_tensor);
@@ -951,7 +1041,9 @@ mod tests {
             assert!(
                 diff < 1e-3,
                 "Single activation mismatch at j={}: got {} expected {}",
-                j, result[j], ref_result[j]
+                j,
+                result[j],
+                ref_result[j]
             );
         }
     }
@@ -1038,7 +1130,11 @@ mod tests {
                 assert!(
                     diff / scale < 1e-3,
                     "int8 mismatch at k={}, n={}, idx={}: fused {} ref {}",
-                    k, n, idx, fused_result[idx], ref_result[idx]
+                    k,
+                    n,
+                    idx,
+                    fused_result[idx],
+                    ref_result[idx]
                 );
             }
         }
@@ -1051,7 +1147,9 @@ mod tests {
         let m = 1;
 
         let input_data = vec![1.0f32; k];
-        let weight_data: Vec<f32> = (0..n * k).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let weight_data: Vec<f32> = (0..n * k)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
 
         let w_tensor = Tensor::from_slice(&weight_data, &[n, k]);
         let w_q = ternary_quantize(&w_tensor);
@@ -1067,7 +1165,9 @@ mod tests {
             assert!(
                 diff < 1e-3,
                 "int8 single activation mismatch at j={}: got {} expected {}",
-                j, result[j], ref_result[j]
+                j,
+                result[j],
+                ref_result[j]
             );
         }
     }
@@ -1247,7 +1347,12 @@ mod tests {
                 assert!(
                     diff < 1e-3,
                     "grouped mismatch at k={}, n={}, gs={}, idx={}: fused {}, ref {}",
-                    k, n, gs, idx, fused_result[idx], ref_result[idx]
+                    k,
+                    n,
+                    gs,
+                    idx,
+                    fused_result[idx],
+                    ref_result[idx]
                 );
             }
         }
@@ -1285,7 +1390,12 @@ mod tests {
                 assert!(
                     diff / scale < 1e-3,
                     "grouped int8 mismatch at k={}, n={}, gs={}, idx={}: fused {}, ref {}",
-                    k, n, gs, idx, fused_result[idx], ref_result[idx]
+                    k,
+                    n,
+                    gs,
+                    idx,
+                    fused_result[idx],
+                    ref_result[idx]
                 );
             }
         }

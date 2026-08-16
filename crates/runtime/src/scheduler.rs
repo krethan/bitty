@@ -283,7 +283,8 @@ impl Node for SinkNode {
         &self.name
     }
     fn process(&self, _packet: &Packet) -> Vec<Packet> {
-        self.received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.received
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         vec![]
     }
 }
@@ -375,9 +376,7 @@ mod tests {
         };
 
         let sparsify_id = {
-            let sparsify = Box::new(SparsifyNode::new(
-                "sparsify", sparsity, vec![matmul_id],
-            ));
+            let sparsify = Box::new(SparsifyNode::new("sparsify", sparsity, vec![matmul_id]));
             graph.add_node(sparsify)
         };
 

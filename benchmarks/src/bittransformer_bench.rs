@@ -1,9 +1,9 @@
-use std::time::Instant;
-use bitllm_tensor::{Tensor, DType};
-use bitllm_runtime::config::ModelConfig;
 use bitllm_runtime::attention::KvCache;
-use bitllm_runtime::model::TransformerLayer;
 use bitllm_runtime::bittransformer::BitTransformerLayer;
+use bitllm_runtime::config::ModelConfig;
+use bitllm_runtime::model::TransformerLayer;
+use bitllm_tensor::{DType, Tensor};
+use std::time::Instant;
 
 fn main() {
     let config = ModelConfig::tiny_test();
@@ -16,7 +16,13 @@ fn main() {
     let hidden = config.hidden_size;
     let input = Tensor::zeros(&[batch, seq_len, hidden], DType::F32);
 
-    let mut cache = KvCache::new(config.num_layers, 1, seq_len, config.num_kv_heads(), config.head_dim());
+    let mut cache = KvCache::new(
+        config.num_layers,
+        1,
+        seq_len,
+        config.num_kv_heads(),
+        config.head_dim(),
+    );
 
     let start = Instant::now();
     for _ in 0..10 {

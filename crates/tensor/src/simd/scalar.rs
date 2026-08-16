@@ -134,14 +134,26 @@ pub fn f32_matmul_row(a: &[f32], b_t: &[f32], out_row: &mut [f32], k: usize, n: 
         for t in 0..k {
             let av = a[t];
             s0 += av * b_t[j * k + t];
-            if remaining > 1 { s1 += av * b_t[(j + 1) * k + t]; }
-            if remaining > 2 { s2 += av * b_t[(j + 2) * k + t]; }
-            if remaining > 3 { s3 += av * b_t[(j + 3) * k + t]; }
+            if remaining > 1 {
+                s1 += av * b_t[(j + 1) * k + t];
+            }
+            if remaining > 2 {
+                s2 += av * b_t[(j + 2) * k + t];
+            }
+            if remaining > 3 {
+                s3 += av * b_t[(j + 3) * k + t];
+            }
         }
         out_row[j] = s0;
-        if remaining > 1 { out_row[j + 1] = s1; }
-        if remaining > 2 { out_row[j + 2] = s2; }
-        if remaining > 3 { out_row[j + 3] = s3; }
+        if remaining > 1 {
+            out_row[j + 1] = s1;
+        }
+        if remaining > 2 {
+            out_row[j + 2] = s2;
+        }
+        if remaining > 3 {
+            out_row[j + 3] = s3;
+        }
     }
 }
 
@@ -172,14 +184,26 @@ pub fn f32_matmul(a: &[f32], b_t: &[f32], out: &mut [f32], m: usize, k: usize, n
                 for t in 0..kk_len {
                     let av = a_row[t];
                     s0 += av * b_slice[j * k + t];
-                    if remaining > 1 { s1 += av * b_slice[(j + 1) * k + t]; }
-                    if remaining > 2 { s2 += av * b_slice[(j + 2) * k + t]; }
-                    if remaining > 3 { s3 += av * b_slice[(j + 3) * k + t]; }
+                    if remaining > 1 {
+                        s1 += av * b_slice[(j + 1) * k + t];
+                    }
+                    if remaining > 2 {
+                        s2 += av * b_slice[(j + 2) * k + t];
+                    }
+                    if remaining > 3 {
+                        s3 += av * b_slice[(j + 3) * k + t];
+                    }
                 }
                 out_row[j] += s0;
-                if remaining > 1 { out_row[j + 1] += s1; }
-                if remaining > 2 { out_row[j + 2] += s2; }
-                if remaining > 3 { out_row[j + 3] += s3; }
+                if remaining > 1 {
+                    out_row[j + 1] += s1;
+                }
+                if remaining > 2 {
+                    out_row[j + 2] += s2;
+                }
+                if remaining > 3 {
+                    out_row[j + 3] += s3;
+                }
             }
         }
         kk = kk_end;

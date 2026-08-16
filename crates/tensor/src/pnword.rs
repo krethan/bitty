@@ -156,7 +156,10 @@ impl PNActivation256 {
         for i in 0..4 {
             let a = _mm_loadu_si128(self.trits.as_ptr().add(i) as *const __m128i);
             let b = _mm_loadu_si128(other.trits.as_ptr().add(i) as *const __m128i);
-            _mm_storeu_si128(result_trits.as_mut_ptr().add(i) as *mut __m128i, _mm_xor_si128(a, b));
+            _mm_storeu_si128(
+                result_trits.as_mut_ptr().add(i) as *mut __m128i,
+                _mm_xor_si128(a, b),
+            );
         }
         Self {
             trits: result_trits,
@@ -173,7 +176,10 @@ impl PNActivation256 {
         for i in 0..4 {
             let a = _mm_loadu_si128(self.trits.as_ptr().add(i) as *const __m128i);
             let b = _mm_loadu_si128(other.trits.as_ptr().add(i) as *const __m128i);
-            _mm_storeu_si128(result_trits.as_mut_ptr().add(i) as *mut __m128i, _mm_and_si128(a, b));
+            _mm_storeu_si128(
+                result_trits.as_mut_ptr().add(i) as *mut __m128i,
+                _mm_and_si128(a, b),
+            );
         }
         Self {
             trits: result_trits,
@@ -198,7 +204,11 @@ impl PNWeight256 {
                 trits[word_idx] |= 1u64 << (trit_idx * 2 + 1);
             }
         }
-        Self { trits, scale, flags: 0 }
+        Self {
+            trits,
+            scale,
+            flags: 0,
+        }
     }
 
     #[inline]
@@ -242,7 +252,10 @@ impl PNWeight256 {
         for i in 0..4 {
             let a = _mm_loadu_si128(self.trits.as_ptr().add(i) as *const __m128i);
             let b = _mm_loadu_si128(other.trits.as_ptr().add(i) as *const __m128i);
-            _mm_storeu_si128(result_trits.as_mut_ptr().add(i) as *mut __m128i, _mm_xor_si128(a, b));
+            _mm_storeu_si128(
+                result_trits.as_mut_ptr().add(i) as *mut __m128i,
+                _mm_xor_si128(a, b),
+            );
         }
         Self {
             trits: result_trits,
@@ -258,7 +271,10 @@ impl PNWeight256 {
         for i in 0..4 {
             let a = _mm_loadu_si128(self.trits.as_ptr().add(i) as *const __m128i);
             let b = _mm_loadu_si128(other.trits.as_ptr().add(i) as *const __m128i);
-            _mm_storeu_si128(result_trits.as_mut_ptr().add(i) as *mut __m128i, _mm_and_si128(a, b));
+            _mm_storeu_si128(
+                result_trits.as_mut_ptr().add(i) as *mut __m128i,
+                _mm_and_si128(a, b),
+            );
         }
         Self {
             trits: result_trits,
@@ -355,7 +371,10 @@ impl PNActivation512 {
         for i in 0..8 {
             let a = _mm512_loadu_si512(self.trits.as_ptr().add(i) as *const __m512i);
             let b = _mm512_loadu_si512(other.trits.as_ptr().add(i) as *const __m512i);
-            _mm512_storeu_si512(trits.as_mut_ptr().add(i) as *mut __m512i, _mm512_xor_si512(a, b));
+            _mm512_storeu_si512(
+                trits.as_mut_ptr().add(i) as *mut __m512i,
+                _mm512_xor_si512(a, b),
+            );
         }
         Self {
             trits,
@@ -373,7 +392,10 @@ impl PNActivation512 {
         for i in 0..8 {
             let a = _mm512_loadu_si512(self.trits.as_ptr().add(i) as *const __m512i);
             let b = _mm512_loadu_si512(other.trits.as_ptr().add(i) as *const __m512i);
-            _mm512_storeu_si512(trits.as_mut_ptr().add(i) as *mut __m512i, _mm512_and_si512(a, b));
+            _mm512_storeu_si512(
+                trits.as_mut_ptr().add(i) as *mut __m512i,
+                _mm512_and_si512(a, b),
+            );
         }
         Self {
             trits,

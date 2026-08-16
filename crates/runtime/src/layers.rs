@@ -321,15 +321,20 @@ mod tests {
         let one = out.as_f32_slice();
         let std = std_out.as_f32_slice();
         for i in 0..4 {
-            assert!((one[i] - 2.0 * std[i]).abs() < 1e-5, "one-centered (w=1) scales by (1 + w) = 2");
+            assert!(
+                (one[i] - 2.0 * std[i]).abs() < 1e-5,
+                "one-centered (w=1) scales by (1 + w) = 2"
+            );
         }
 
         let zero = RmsNorm::new_one_centered(Tensor::zeros(&[2], DType::F32), eps);
         let z_out = zero.forward(&input);
         let zin = z_out.as_f32_slice();
         for i in 0..4 {
-            assert!((zin[i] - std[i]).abs() < 1e-5, "one-centered (w=0) equals standard RMSNorm");
+            assert!(
+                (zin[i] - std[i]).abs() < 1e-5,
+                "one-centered (w=0) equals standard RMSNorm"
+            );
         }
     }
 }
-

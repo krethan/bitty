@@ -51,11 +51,7 @@ impl SparseAttention {
         keys: &[HyperVector],
         values: &[HyperVector],
     ) -> AttentionResult {
-        assert_eq!(
-            keys.len(),
-            values.len(),
-            "key and value counts must match"
-        );
+        assert_eq!(keys.len(), values.len(), "key and value counts must match");
 
         let n = keys.len();
         if n == 0 || query.dims() == 0 {
@@ -105,10 +101,7 @@ impl SparseAttention {
             }
         }
 
-        let value_refs: Vec<&HyperVector> = active
-            .iter()
-            .map(|(idx, _)| &values[*idx])
-            .collect();
+        let value_refs: Vec<&HyperVector> = active.iter().map(|(idx, _)| &values[*idx]).collect();
 
         let output = if num_active == 1 {
             value_refs[0].clone()

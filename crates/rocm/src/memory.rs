@@ -118,7 +118,11 @@ impl GpuBuffer {
     }
 
     #[cfg(feature = "rocm")]
-    pub fn copy_from_host_async(&self, data: &[u8], stream: rocm_rs::hip::hipStream_t) -> Result<()> {
+    pub fn copy_from_host_async(
+        &self,
+        data: &[u8],
+        stream: rocm_rs::hip::hipStream_t,
+    ) -> Result<()> {
         if data.len() > self.size {
             return Err(RocmError::TransferFailed(format!(
                 "Source size {} exceeds buffer size {}",
@@ -195,7 +199,11 @@ impl GpuWeightStreamer {
     }
 
     /// Queue a layer's weights for async transfer to the current VRAM buffer.
-    pub fn queue_layer(&mut self, layer_idx: usize, stream: rocm_rs::hip::hipStream_t) -> Result<()> {
+    pub fn queue_layer(
+        &mut self,
+        layer_idx: usize,
+        stream: rocm_rs::hip::hipStream_t,
+    ) -> Result<()> {
         let offset = layer_idx * self.pcie_width;
         let src = &self.host_ram[offset..offset + self.pcie_width];
         let dst = &self.vram_buffers[self.current_buffer];

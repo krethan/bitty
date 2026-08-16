@@ -14,7 +14,9 @@ fn dump(name: &str, t: &Tensor, dim: usize, rows: usize) {
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let first = args.next().expect("usage: probe_weights <model_dir | model.gguf>");
+    let first = args
+        .next()
+        .expect("usage: probe_weights <model_dir | model.gguf>");
     let opts = if first.ends_with(".gguf") {
         ModelLoadOptions {
             gguf: Some(first),
@@ -40,10 +42,17 @@ fn main() -> anyhow::Result<()> {
     let h = model.config.hidden_size;
     let hd = model.config.head_dim();
 
-    println!("CONFIG hidden={} layers={} heads={} kv={} inter={} rope_theta={} max_seq={} head_dim={}",
-        model.config.hidden_size, model.config.num_layers, model.config.num_heads,
-        model.config.num_kv_heads(), model.config.intermediate_size,
-        model.config.rope_theta, model.config.max_seq_len, hd);
+    println!(
+        "CONFIG hidden={} layers={} heads={} kv={} inter={} rope_theta={} max_seq={} head_dim={}",
+        model.config.hidden_size,
+        model.config.num_layers,
+        model.config.num_heads,
+        model.config.num_kv_heads(),
+        model.config.intermediate_size,
+        model.config.rope_theta,
+        model.config.max_seq_len,
+        hd
+    );
 
     let tokens = [1u32, 2, 3, 4];
     let hidden0 = model.embedding.forward(&tokens);

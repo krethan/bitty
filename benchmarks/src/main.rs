@@ -9,8 +9,8 @@ mod memory;
 mod perplexity;
 mod precision;
 mod qat;
-mod qat_sweep;
 mod qat_ablation;
+mod qat_sweep;
 mod quantization;
 mod train;
 

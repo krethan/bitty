@@ -85,7 +85,12 @@ impl<T> BitHNSW<T> {
         }
     }
 
-    pub fn with_params(mut self, max_degree: usize, ef_search: usize, ef_construction: usize) -> Self {
+    pub fn with_params(
+        mut self,
+        max_degree: usize,
+        ef_search: usize,
+        ef_construction: usize,
+    ) -> Self {
         self.max_degree = max_degree.max(1);
         self.ef_search = ef_search.max(1);
         self.ef_construction = ef_construction.max(1);
@@ -178,7 +183,9 @@ impl<T> BitHNSW<T> {
     /// visited nodes. Allocation-free: reuses `visited_stamps` and `heap`.
     fn best_first_search(&mut self, query: &HyperVector, k: usize) -> Vec<Match> {
         let k = k.max(1);
-        let entry = self.entry_point.expect("non-empty HNSW must have entry point");
+        let entry = self
+            .entry_point
+            .expect("non-empty HNSW must have entry point");
 
         // Bump the visited generation. On wrap, reset the stamp array.
         self.visited_gen = self.visited_gen.wrapping_add(1);
@@ -192,10 +199,13 @@ impl<T> BitHNSW<T> {
 
         let heap = &mut self.heap;
         heap.clear();
-        heap_push(heap, Match {
-            distance: query.hamming_distance(&self.nodes[entry].key),
-            index: entry,
-        });
+        heap_push(
+            heap,
+            Match {
+                distance: query.hamming_distance(&self.nodes[entry].key),
+                index: entry,
+            },
+        );
 
         let mut results: Vec<Match> = Vec::with_capacity(k);
         while let Some(m) = heap_pop(heap) {
@@ -225,7 +235,13 @@ impl<T> BitHNSW<T> {
                 }
                 let d = query.hamming_distance(&self.nodes[n_idx].key);
                 if results.len() < k || d < results[k - 1].distance {
-                    heap_push(heap, Match { distance: d, index: n_idx });
+                    heap_push(
+                        heap,
+                        Match {
+                            distance: d,
+                            index: n_idx,
+                        },
+                    );
                 }
             }
         }
@@ -353,7 +369,11 @@ mod tests {
             h.insert(k, i);
         }
 
-        let expected = h.search(&q, 3).into_iter().map(|m| m.index).collect::<Vec<_>>();
+        let expected = h
+            .search(&q, 3)
+            .into_iter()
+            .map(|m| m.index)
+            .collect::<Vec<_>>();
         for _ in 0..600 {
             let r = h.search(&q, 3);
             let idx: Vec<usize> = r.iter().map(|m| m.index).collect();
@@ -449,12 +469,12 @@ mod tests {
         let mut hits = 0;
         let trials = 50;
         for t in 0usize..trials {
-        let mut q = base.clone();
-        for b in 0..5usize {
-            if ((t.wrapping_mul(0x85EB_CA6Busize >> b) >> b) & 1) == 1 {
-                q.flip_bit(b);
+            let mut q = base.clone();
+            for b in 0..5usize {
+                if ((t.wrapping_mul(0x85EB_CA6Busize >> b) >> b) & 1) == 1 {
+                    q.flip_bit(b);
+                }
             }
-        }
             let linear_best = (0..h.len())
                 .map(|i| q.hamming_distance(h.key(i).unwrap()))
                 .min()
@@ -464,7 +484,10 @@ mod tests {
                 hits += 1;
             }
             // Never allow HNSW to be dramatically worse than linear.
-            assert!(hnsw_best <= linear_best + 4, "t={t}: hnsw={hnsw_best} linear={linear_best}");
+            assert!(
+                hnsw_best <= linear_best + 4,
+                "t={t}: hnsw={hnsw_best} linear={linear_best}"
+            );
         }
         assert!(hits >= trials * 9 / 10, "recall@1 too low: {hits}/{trials}");
     }

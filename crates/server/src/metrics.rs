@@ -65,7 +65,8 @@ impl Metrics {
     }
 
     pub fn set_queue_capacity(&self, capacity: usize) {
-        self.queue_capacity.store(capacity as u64, Ordering::Relaxed);
+        self.queue_capacity
+            .store(capacity as u64, Ordering::Relaxed);
     }
 
     /// Record one completed request. `secs` is the wall-clock latency.
@@ -75,7 +76,8 @@ impl Metrics {
             .position(|b| secs <= *b)
             .unwrap_or(DURATION_BUCKETS.len() - 1);
         self.duration_buckets[idx].fetch_add(1, Ordering::Relaxed);
-        self.duration_sum_us.fetch_add((secs * 1e6) as u64, Ordering::Relaxed);
+        self.duration_sum_us
+            .fetch_add((secs * 1e6) as u64, Ordering::Relaxed);
         self.duration_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -101,7 +103,9 @@ impl Metrics {
             self.tokens_total.load(Ordering::Relaxed)
         ));
 
-        out.push_str("# HELP bitllm_requests_rejected_total Requests rejected because the queue was full\n");
+        out.push_str(
+            "# HELP bitllm_requests_rejected_total Requests rejected because the queue was full\n",
+        );
         out.push_str("# TYPE bitllm_requests_rejected_total counter\n");
         out.push_str(&format!(
             "bitllm_requests_rejected_total {}\n",
@@ -153,9 +157,7 @@ impl Metrics {
             "bitllm_request_duration_seconds_sum {:.6}\n",
             self.duration_sum_us.load(Ordering::Relaxed) as f64 / 1e6
         ));
-        out.push_str(&format!(
-            "bitllm_request_duration_seconds_count {count}\n"
-        ));
+        out.push_str(&format!("bitllm_request_duration_seconds_count {count}\n"));
 
         out
     }

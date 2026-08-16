@@ -1,4 +1,4 @@
-use std::ops::{BitXor, BitAnd, BitOr};
+use std::ops::{BitAnd, BitOr, BitXor};
 
 #[derive(Debug, Clone)]
 pub struct HyperVector {
@@ -65,12 +65,22 @@ impl HyperVector {
     }
 
     pub fn get_bit(&self, i: usize) -> bool {
-        assert!(i < self.dims, "bit index out of bounds: {} >= {}", i, self.dims);
+        assert!(
+            i < self.dims,
+            "bit index out of bounds: {} >= {}",
+            i,
+            self.dims
+        );
         (self.data[i / 64] >> (i % 64)) & 1 == 1
     }
 
     pub fn set_bit(&mut self, i: usize, val: bool) {
-        assert!(i < self.dims, "bit index out of bounds: {} >= {}", i, self.dims);
+        assert!(
+            i < self.dims,
+            "bit index out of bounds: {} >= {}",
+            i,
+            self.dims
+        );
         let word = i / 64;
         let bit_mask = 1u64 << (i % 64);
         if val {
@@ -90,7 +100,10 @@ impl HyperVector {
     }
 
     pub fn hamming_distance(&self, other: &Self) -> u32 {
-        assert_eq!(self.dims, other.dims, "dimension mismatch in hamming_distance");
+        assert_eq!(
+            self.dims, other.dims,
+            "dimension mismatch in hamming_distance"
+        );
         self.data
             .iter()
             .zip(other.data.iter())
@@ -256,7 +269,11 @@ mod tests {
     fn test_random_popcount() {
         let hv = HyperVector::random(512);
         let pc = hv.popcount();
-        assert!(pc > 200 && pc < 312, "random popcount out of expected range: {}", pc);
+        assert!(
+            pc > 200 && pc < 312,
+            "random popcount out of expected range: {}",
+            pc
+        );
     }
 
     #[test]

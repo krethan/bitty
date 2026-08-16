@@ -106,8 +106,21 @@ fn bench_i8_dot(c: &mut Criterion) {
 fn bench_pnword256_pack(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![16, 64, 128];
     for &n in &sizes {
-        let dense: Vec<f32> = (0..n).map(|i| (i as f32 - n as f32 / 2.0) / 100.0).collect();
-        let ternary: Vec<i8> = dense.iter().map(|&v| if v > 0.0 { 1 } else if v < 0.0 { -1 } else { 0 }).collect();
+        let dense: Vec<f32> = (0..n)
+            .map(|i| (i as f32 - n as f32 / 2.0) / 100.0)
+            .collect();
+        let ternary: Vec<i8> = dense
+            .iter()
+            .map(|&v| {
+                if v > 0.0 {
+                    1
+                } else if v < 0.0 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         c.bench_function(&format!("pnword256_pack_n={}", n), |bench| {
             bench.iter(|| {
                 let _ = black_box(PNActivation256::pack(black_box(&ternary)));
@@ -119,7 +132,17 @@ fn bench_pnword256_pack(c: &mut Criterion) {
 fn bench_pnword256_dot(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![16, 64, 128];
     for &n in &sizes {
-        let a_vals: Vec<i8> = (0..n).map(|i| if i % 3 == 0 { 1 } else if i % 3 == 1 { -1 } else { 0 }).collect();
+        let a_vals: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    1
+                } else if i % 3 == 1 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         let w_vals: Vec<i8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
         let a = PNActivation256::pack(&a_vals);
         let w = PNWeight256::pack(&w_vals, 1.0);
@@ -134,7 +157,17 @@ fn bench_pnword256_dot(c: &mut Criterion) {
 fn bench_pnword256_xor(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![16, 64, 128];
     for &n in &sizes {
-        let a_vals: Vec<i8> = (0..n).map(|i| if i % 3 == 0 { 1 } else if i % 3 == 1 { -1 } else { 0 }).collect();
+        let a_vals: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    1
+                } else if i % 3 == 1 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         let b_vals: Vec<i8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
         let a = PNActivation256::pack(&a_vals);
         let b = PNActivation256::pack(&b_vals);
@@ -149,7 +182,17 @@ fn bench_pnword256_xor(c: &mut Criterion) {
 fn bench_pnword256_and(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![16, 64, 128];
     for &n in &sizes {
-        let a_vals: Vec<i8> = (0..n).map(|i| if i % 3 == 0 { 1 } else if i % 3 == 1 { -1 } else { 0 }).collect();
+        let a_vals: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    1
+                } else if i % 3 == 1 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         let b_vals: Vec<i8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
         let a = PNActivation256::pack(&a_vals);
         let b = PNActivation256::pack(&b_vals);
@@ -164,7 +207,17 @@ fn bench_pnword256_and(c: &mut Criterion) {
 fn bench_pnword256_popcount(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![16, 64, 128];
     for &n in &sizes {
-        let a_vals: Vec<i8> = (0..n).map(|i| if i % 3 == 0 { 1 } else if i % 3 == 1 { -1 } else { 0 }).collect();
+        let a_vals: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    1
+                } else if i % 3 == 1 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         let a = PNActivation256::pack(&a_vals);
         c.bench_function(&format!("pnword256_popcount_n={}", n), |bench| {
             bench.iter(|| {
@@ -177,7 +230,17 @@ fn bench_pnword256_popcount(c: &mut Criterion) {
 fn bench_pnword512_memory_bandwidth(c: &mut Criterion) {
     let sizes: Vec<usize> = vec![256, 1024, 4096];
     for &n in &sizes {
-        let a_vals: Vec<i8> = (0..n).map(|i| if i % 3 == 0 { 1 } else if i % 3 == 1 { -1 } else { 0 }).collect();
+        let a_vals: Vec<i8> = (0..n)
+            .map(|i| {
+                if i % 3 == 0 {
+                    1
+                } else if i % 3 == 1 {
+                    -1
+                } else {
+                    0
+                }
+            })
+            .collect();
         let _b_vals: Vec<i8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { -1 }).collect();
 
         let a = PNActivation512::pack(&a_vals);

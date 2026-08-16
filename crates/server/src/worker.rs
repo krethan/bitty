@@ -91,7 +91,10 @@ impl InferenceWorker {
                         );
                         task_metrics.inc_tokens(count);
                     }
-                    InferenceRequest::Swap { model: new_model, ack } => {
+                    InferenceRequest::Swap {
+                        model: new_model,
+                        ack,
+                    } => {
                         model = *new_model;
                         task_metrics.inc_swaps();
                         log::info!("Inference worker: model hot-swapped");

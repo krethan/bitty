@@ -11,7 +11,9 @@ const TEXT: &str = "The quick brown fox jumps over the lazy dog. The United King
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let first = args.next().expect("usage: real_ppl_ablate <model.gguf | model_dir> <tokenizer.json>");
+    let first = args
+        .next()
+        .expect("usage: real_ppl_ablate <model.gguf | model_dir> <tokenizer.json>");
     let tok_path = PathBuf::from(args.next().expect("missing tokenizer.json"));
 
     let opts = if first.ends_with(".gguf") {
@@ -58,6 +60,11 @@ fn main() -> anyhow::Result<()> {
         nll += -lp;
         n += 1;
     }
-    println!("no-layer tokens={} ppl={:.2} (uniform would be {})", n, (nll / n as f64).exp(), v);
+    println!(
+        "no-layer tokens={} ppl={:.2} (uniform would be {})",
+        n,
+        (nll / n as f64).exp(),
+        v
+    );
     Ok(())
 }

@@ -4,7 +4,6 @@ pub mod bittransformer;
 pub mod config;
 pub mod continuous;
 pub mod gguf;
-pub mod scheduler;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod layers;
@@ -12,6 +11,7 @@ pub mod loader;
 pub mod model;
 pub mod record;
 pub mod sampler;
+pub mod scheduler;
 pub mod speculative;
 
 #[cfg(feature = "gpu")]

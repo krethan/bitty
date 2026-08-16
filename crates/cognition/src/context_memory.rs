@@ -130,8 +130,7 @@ impl ContextMemory {
     /// Bytes of key storage (window dense + records bundled).
     pub fn memory_bytes(&self) -> usize {
         let per_key = self.config.dims.div_ceil(8);
-        self.window_keys.len() * per_key
-            + self.records.iter().map(|_| per_key).sum::<usize>()
+        self.window_keys.len() * per_key + self.records.iter().map(|_| per_key).sum::<usize>()
     }
 
     /// Total tokens held in records (evicted history).
@@ -245,7 +244,10 @@ mod tests {
             mem.push(t % 96);
         }
         let per_key = test_config().dims.div_ceil(8);
-        assert_eq!(mem.memory_bytes(), (mem.window_len() + mem.n_records()) * per_key);
+        assert_eq!(
+            mem.memory_bytes(),
+            (mem.window_len() + mem.n_records()) * per_key
+        );
         assert!(mem.memory_bytes() < 272 * per_key);
     }
 

@@ -133,7 +133,8 @@ fn bench_insertion(c: &mut Criterion) {
             b.iter_batched(
                 || keys2.clone(),
                 |keys| {
-                    let mut mem: SparseAssociativeMemory<usize> = SparseAssociativeMemory::with_capacity(n);
+                    let mut mem: SparseAssociativeMemory<usize> =
+                        SparseAssociativeMemory::with_capacity(n);
                     for (i, k) in keys.into_iter().enumerate() {
                         mem.store(k, i);
                     }

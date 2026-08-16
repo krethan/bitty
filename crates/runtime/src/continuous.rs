@@ -160,7 +160,10 @@ impl Model {
                 let slice = logits.as_f32_slice();
                 for (i, &b) in decode_slots.iter().enumerate() {
                     let start = i * vocab;
-                    batch.active[b].as_mut().unwrap().logits
+                    batch.active[b]
+                        .as_mut()
+                        .unwrap()
+                        .logits
                         .copy_from_slice(&slice[start..start + vocab]);
                 }
             }
@@ -209,16 +212,14 @@ impl Model {
 
     /// Schedule queued requests into free slots, prefilling each prompt and
     /// storing the last-token logits for the first sample.
-    fn schedule_pending(
-        &mut self,
-        batch: &mut ContinuousBatch,
-        gpu: Option<&GpuContext>,
-    ) -> usize {
+    fn schedule_pending(&mut self, batch: &mut ContinuousBatch, gpu: Option<&GpuContext>) -> usize {
         let mut scheduled = 0;
         loop {
             let slot = batch.first_free_slot();
             let Some(b) = slot else { break };
-            let Some(req) = batch.queue.pop_front() else { break };
+            let Some(req) = batch.queue.pop_front() else {
+                break;
+            };
 
             if req.max_new_tokens == 0 {
                 batch.completed.push(CompletedSequence {
@@ -228,7 +229,11 @@ impl Model {
                 continue;
             }
 
-            let prompt: &[u32] = if req.prompt.is_empty() { &[0] } else { &req.prompt };
+            let prompt: &[u32] = if req.prompt.is_empty() {
+                &[0]
+            } else {
+                &req.prompt
+            };
             let logits = self.forward_slot(prompt, b, gpu);
             let vocab = self.config.vocab_size;
             let last_row = logits.shape()[0] - 1;

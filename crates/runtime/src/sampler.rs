@@ -64,12 +64,20 @@ fn top_k_sample(logits: &[f32], k: usize, temperature: f32) -> u32 {
         return 0;
     }
     let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
-    indexed.select_nth_unstable_by(k - 1, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    indexed.select_nth_unstable_by(k - 1, |a, b| {
+        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
     indexed.truncate(k);
 
-    let max_val = indexed.iter().map(|&(_, v)| v).fold(f32::NEG_INFINITY, f32::max);
+    let max_val = indexed
+        .iter()
+        .map(|&(_, v)| v)
+        .fold(f32::NEG_INFINITY, f32::max);
     let inv_temp = 1.0 / temperature;
-    let mut probs: Vec<f32> = indexed.iter().map(|&(_, v)| ((v - max_val) * inv_temp).exp()).collect();
+    let mut probs: Vec<f32> = indexed
+        .iter()
+        .map(|&(_, v)| ((v - max_val) * inv_temp).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     let inv_sum = 1.0 / sum;
     for p in probs.iter_mut() {

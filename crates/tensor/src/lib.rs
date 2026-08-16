@@ -469,9 +469,7 @@ mod tests {
     /// softmax (attention ppl went to NaN on a real WikiText-2 window).
     #[test]
     fn test_simd_f32_exp_overflow_range() {
-        let a = vec![
-            -1000.0, -500.0, -200.0, -100.0, -90.0, 90.0, 100.0, 200.0,
-        ];
+        let a = vec![-1000.0, -500.0, -200.0, -100.0, -90.0, 90.0, 100.0, 200.0];
         let mut out = vec![0.0f32; 8];
         simd::f32_exp(&a, &mut out);
         for i in 0..8 {

@@ -1,10 +1,10 @@
 use crate::attention::{
-    apply_rotary_emb_batch, apply_rotary_emb_inplace_with_cache, scaled_dot_product_attention_batched,
-    KvCache, RoPECache,
+    apply_rotary_emb_batch, apply_rotary_emb_inplace_with_cache,
+    scaled_dot_product_attention_batched, KvCache, RoPECache,
 };
 use crate::bitlinear::BitLinear;
-use crate::layers::RmsNorm;
 use crate::config::ModelConfig;
+use crate::layers::RmsNorm;
 use crate::model::TransformerLayer;
 use crate::GpuContext;
 use bitllm_quantization::QuantConfig;
@@ -141,7 +141,8 @@ impl BitAttention {
             )
         };
 
-        let reshaped = crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
+        let reshaped =
+            crate::attention::sdp_output_to_hidden(&output, seq_len, num_heads, head_dim);
         self.o_proj.forward(&reshaped)
     }
 
@@ -217,7 +218,8 @@ impl BitAttention {
             }
         };
 
-        let reshaped = crate::attention::sdp_batched_output_to_hidden(&output, batch, num_heads, head_dim);
+        let reshaped =
+            crate::attention::sdp_batched_output_to_hidden(&output, batch, num_heads, head_dim);
         self.o_proj.forward(&reshaped)
     }
 }
@@ -279,9 +281,15 @@ impl BitTransformerLayer {
                 (input.clone(), normed)
             }
         };
-        let attn_out = self
-            .attention
-            .forward_gpu(&block_input, cache, layer_idx, slot, position, gpu, rope_cache);
+        let attn_out = self.attention.forward_gpu(
+            &block_input,
+            cache,
+            layer_idx,
+            slot,
+            position,
+            gpu,
+            rope_cache,
+        );
         let h = gpu_add(&residual, &attn_out, gpu);
 
         // FFN block with residual
@@ -474,7 +482,11 @@ fn scaled_dot_product_attention(
             let mut scores = Vec::with_capacity(attn_len);
             for pos_k in 0..attn_len {
                 let k_row = &k_ptr[head_base + pos_k * head_dim..][..head_dim];
-                let dot = q_row.iter().zip(k_row.iter()).map(|(a, b)| a * b).sum::<f32>();
+                let dot = q_row
+                    .iter()
+                    .zip(k_row.iter())
+                    .map(|(a, b)| a * b)
+                    .sum::<f32>();
                 let score = if softcap > 0.0 {
                     let s = dot * attn_scale;
                     softcap * (s / softcap).tanh()
@@ -571,7 +583,11 @@ mod tests {
     /// Manual `x - RMSNorm(x)` with unit (ones) weights, for verifying the
     /// SubLN math against an independent implementation.
     fn manual_sub_ln(input: &Tensor, eps: f32) -> Tensor {
-        let hidden = input.shape().last().copied().unwrap_or(input.num_elements());
+        let hidden = input
+            .shape()
+            .last()
+            .copied()
+            .unwrap_or(input.num_elements());
         let slice = input.as_f32_slice();
         let mean_sq: f64 = slice.iter().map(|v| (v * v) as f64).sum::<f64>() / hidden as f64;
         let rms = (mean_sq + eps as f64).sqrt();

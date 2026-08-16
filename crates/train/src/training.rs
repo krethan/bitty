@@ -112,7 +112,11 @@ impl StochasticFlip {
 
     /// Compute the current noise scale based on annealing schedule.
     pub fn current_noise_scale(&self) -> f32 {
-        annealed_noise_scale(self.step, self.config.noise_scale, self.config.noise_anneal_steps)
+        annealed_noise_scale(
+            self.step,
+            self.config.noise_scale,
+            self.config.noise_anneal_steps,
+        )
     }
 
     /// Draw one gaussian noise sample at the current annealed scale.
