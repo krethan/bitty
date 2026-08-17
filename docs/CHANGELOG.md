@@ -1,5 +1,33 @@
 # Changelog
 
+## [Unreleased] - 2026-08-16
+
+### Repo Hygiene & CI
+
+### Changed
+- **Workspace size**: 10 → 9 crates (`hip_tern` decoupled to standalone, builds via `cargo build --manifest-path crates/hip_tern/Cargo.toml --features hip`).
+- **GPU feature wiring**: `bitllm-runtime/gpu` now forwards `bitllm-rocm/rocm` (previously only made the dep non-optional — HIP kernels never actually compiled). `bitllm-server` exposes a `gpu` feature forwarding `bitllm-runtime/gpu`. `bitllm-benchmarks/rocm` forwards the same. Enabling `gpu` now requires a ROCm toolchain and fails the build otherwise, rather than silently producing a CPU stub.
+- **Test suite runtime**: 70s → 12s. The full 200-step QAT end-to-end test is marked `#[ignore]` and run on demand / in CI via `cargo test -p bitllm-train -- --ignored`. `deploy_produces_bit1_model` trimmed from default to 20 steps (deploy mechanics don't depend on convergence).
+- **Workspace formatting**: `cargo fmt --all` applied across all 70 files.
+- **Test/bench clippy**: `--all-targets` clippy clean (was 69 warnings across `#[cfg(test)]` modules and criterion benches).
+- **Python scaffold**: PyYAML is now a lazy import (the module loads without it; only `Config.load`/`save` need it). New `python/pyproject.toml` with PyYAML dep and `bitty` console script. Sync `cli()` entry point. Fixed `MemorySystem`: `initialize()` is async and `store_cycle`/`store_error` are now defined (both were previously called but missing — runtime AttributeError/TypeError).
+- **Untracked benchmark artifacts**: 32 `benchmarks/results/*.{csv,json}` removed from git; `/benchmarks/results/` added to `.gitignore`.
+- **Docs cleanup**: removed `docs/architecture.md` (placeholder + garbled text); added `python/README.md`.
+
+### Added
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo test -p bitllm-train -- --ignored`. Python matrix (3.10/3.11/3.12) install + compile + CLI smoke test.
+
+### Performance
+
+### Changed
+- **Ternary quantize/dequantize**: switched from `get_flat_f32`/`set_flat_f32` (per-element dtype dispatch + byte-by-byte copy) to direct `as_f32_slice()`/`as_f32_slice_mut()` access. **~2x quantize, ~1.4x dequantize** (1024×1024: 11.1ms → 6.0ms quantize, 5.9ms → 4.2ms dequantize).
+- **`Tensor::dot`** (FP32 matmul): replaced naive scalar implementation with a SIMD-accelerated path. Single-row inputs use `simd::f32_dot`; multi-row inputs get an in-place transpose via direct slice access (8–16x faster than the byte-by-byte `Tensor::transpose`), then dispatch to `simd::f32_matmul`. **2.5x–10x faster** depending on size (512: 31.6ms → 12.8ms; 1024: 623ms → 104ms; 2048: 10.2s → 1.0s).
+
+### Results
+- **306/306 workspace tests pass** (was 312 including the now-decoupled `hip_tern` crate's 5 tests + 1 ignored). All clippy clean with `-D warnings`. Working tree clean.
+
+---
+
 ## [Unreleased] - 2026-08-03
 
 ### Phase 7 Model Support — LLaMA-family compatibility
