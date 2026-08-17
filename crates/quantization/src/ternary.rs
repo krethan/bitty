@@ -58,29 +58,69 @@ pub fn quantize_grouped_with_outliers(
         scales.push(scale);
     }
 
-    let mut data = vec![0u8; n.div_ceil(8)];
+    // We use chunk-major packing for 2D+ weight matrices (better matmul
+    // locality) and the original flat bit packing for 1D tensors.
+    let use_chunk_major = tensor.shape().len() >= 2;
+    let num_neurons = n / k;
+    let k_bytes = k.div_ceil(8);
+    let data_len = if use_chunk_major {
+        num_neurons * k_bytes
+    } else {
+        n.div_ceil(8)
+    };
+    let mut data = vec![0u8; data_len];
 
     // Fast path: direct slice access avoids per-element dispatch in
-    // get_flat_f32 (dtype match + byte-by-byte read). For non-grouped
-    // (single-scale) quantization, this is straightforward: scale the value
-    // and set the sign bit. Grouped quantization needs per-column grouping.
+    // get_flat_f32 (dtype match + byte-by-byte read).
     let src_slice = src.as_f32_slice();
-    if group_size == 0 {
-        let scale = scales[0];
-        let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
-        for (i, &v) in src_slice.iter().enumerate() {
-            if v * inv_scale > 0.0 {
-                data[i / 8] |= 1 << (i % 8);
+    if use_chunk_major {
+        // Chunk-major: for chunk c, bytes [c*num_neurons .. (c+1)*num_neurons]
+        // hold the packed byte c of every output neuron.
+        if group_size == 0 {
+            let scale = scales[0];
+            let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
+            for (i, &v) in src_slice.iter().enumerate() {
+                if v * inv_scale > 0.0 {
+                    let j = i / k;
+                    let t = i % k;
+                    let c = t / 8;
+                    let b = t % 8;
+                    data[c * num_neurons + j] |= 1 << b;
+                }
+            }
+        } else {
+            for i in 0..n {
+                let col = i % k;
+                let g = col / group_size;
+                let scale = scales[g];
+                let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
+                if src_slice[i] * inv_scale > 0.0 {
+                    let j = i / k;
+                    let c = col / 8;
+                    let b = col % 8;
+                    data[c * num_neurons + j] |= 1 << b;
+                }
             }
         }
     } else {
-        for i in 0..n {
-            let col = i % k;
-            let g = col / group_size;
-            let scale = scales[g];
+        // 1D tensor: flat bit packing.
+        if group_size == 0 {
+            let scale = scales[0];
             let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
-            if src_slice[i] * inv_scale > 0.0 {
-                data[i / 8] |= 1 << (i % 8);
+            for (i, &v) in src_slice.iter().enumerate() {
+                if v * inv_scale > 0.0 {
+                    data[i / 8] |= 1 << (i % 8);
+                }
+            }
+        } else {
+            for i in 0..n {
+                let col = i % k;
+                let g = col / group_size;
+                let scale = scales[g];
+                let inv_scale = if scale == 0.0 { 1.0 } else { 1.0 / scale };
+                if src_slice[i] * inv_scale > 0.0 {
+                    data[i / 8] |= 1 << (i % 8);
+                }
             }
         }
     }
@@ -138,6 +178,8 @@ pub fn ternary_dequantize(qtensor: &QuantizedTensor) -> Tensor {
     } else {
         1
     };
+    let use_chunk_major = qtensor.shape.len() >= 2;
+    let num_neurons = n / k;
     let mut result = Tensor::new(&qtensor.shape, bitllm_tensor::DType::F32);
     let out_slice = result.as_f32_slice_mut();
 
@@ -147,18 +189,42 @@ pub fn ternary_dequantize(qtensor: &QuantizedTensor) -> Tensor {
     if qtensor.config.group_size == 0 {
         let scale = qtensor.scales[0];
         let neg_scale = -scale;
-        for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
-            let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
-            *slot = if bit == 1 { scale } else { neg_scale };
+        if use_chunk_major {
+            for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
+                let j = i / k;
+                let t = i % k;
+                let c = t / 8;
+                let b = t % 8;
+                let bit = (qtensor.data[c * num_neurons + j] >> b) & 1;
+                *slot = if bit == 1 { scale } else { neg_scale };
+            }
+        } else {
+            for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
+                let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
+                *slot = if bit == 1 { scale } else { neg_scale };
+            }
         }
     } else {
         let group_size = qtensor.config.group_size;
-        for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
-            let col = i % k;
-            let g = col / group_size;
-            let scale = qtensor.scales[g];
-            let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
-            *slot = if bit == 1 { scale } else { -scale };
+        if use_chunk_major {
+            for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
+                let j = i / k;
+                let col = i % k;
+                let g = col / group_size;
+                let scale = qtensor.scales[g];
+                let c = col / 8;
+                let b = col % 8;
+                let bit = (qtensor.data[c * num_neurons + j] >> b) & 1;
+                *slot = if bit == 1 { scale } else { -scale };
+            }
+        } else {
+            for (i, slot) in out_slice.iter_mut().enumerate().take(n) {
+                let col = i % k;
+                let g = col / group_size;
+                let scale = qtensor.scales[g];
+                let bit = (qtensor.data[i / 8] >> (i % 8)) & 1;
+                *slot = if bit == 1 { scale } else { -scale };
+            }
         }
     }
 

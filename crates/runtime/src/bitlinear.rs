@@ -114,15 +114,15 @@ mod tests {
 
     /// Reference dequantized ternary matmul for a single input row.
     fn ref_bitlinear(x: &[f32], wq: &QuantizedTensor) -> Vec<f32> {
-        let k = wq.shape[1];
         let n = wq.shape[0];
         let w_scale = wq.scales[0];
         let mut out = vec![0.0f32; n];
         for (j, o) in out.iter_mut().enumerate() {
             let mut sum = 0.0f64;
             for (t, &xt) in x.iter().enumerate() {
-                let idx = j * k + t;
-                let w = if (wq.data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                let c = t / 8;
+                let b = t % 8;
+                let w = if (wq.data[c * n + j] >> b) & 1 == 1 {
                     w_scale as f64
                 } else {
                     -w_scale as f64
@@ -195,15 +195,17 @@ mod tests {
         let x = Tensor::from_slice(&[1.0f32; 16], &[1, 16]);
 
         // Manual grouped reference.
+        let n = lin.weight_q.shape[0];
         let gs = 8;
         let mut expected = [0.0f32; 2];
         for (j, exp) in expected.iter_mut().enumerate() {
             let mut sum = 0.0f64;
             for t in 0..16 {
-                let idx = j * 16 + t;
+                let c = t / 8;
+                let b = t % 8;
                 let g = t / gs;
                 let scale = lin.weight_q.scales[g];
-                let bit = (lin.weight_q.data[idx / 8] >> (idx % 8)) & 1;
+                let bit = (lin.weight_q.data[c * n + j] >> b) & 1;
                 let w = if bit == 1 { scale } else { -scale };
                 sum += 1.0f64 * w as f64;
             }

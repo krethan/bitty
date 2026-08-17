@@ -29,11 +29,13 @@ fn apply_outlier_correction(
     let gs = weight.config.group_size;
 
     for (idx, exact_val) in outliers.indices.iter().zip(outliers.values.iter()) {
-        let j = (*idx as usize) / k;
-        let t = (*idx as usize) % k;
+        let idx_usize = *idx as usize;
+        let j = idx_usize / k;
+        let t = idx_usize % k;
         let g = if gs == 0 { 0 } else { t / gs };
         let w_scale = weight.scales[g];
-        let bit = (data[(*idx as usize) / 8] >> (t % 8)) & 1;
+        // Weight data is chunk-major: byte c of neuron j is at data[c*n + j].
+        let bit = (data[(t / 8) * n + j] >> (t % 8)) & 1;
         let sign_val = if bit == 1 { w_scale } else { -w_scale };
         let correction = exact_val - sign_val;
 
@@ -92,8 +94,9 @@ fn fused_bit1_matmul_single_scale(
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for t in 0..k {
-                    let idx = j * k + t;
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let c = t / 8;
+                    let b = t % 8;
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         w_scale
                     } else {
                         -w_scale
@@ -162,9 +165,10 @@ fn fused_bit1_matmul_single_scale_aligned(
                 }
                 let mag_total = lut[255];
 
-                let w_row = &data[c..];
+                // Weight data is chunk-major: byte c of neuron j is at data[c*n + j].
+                let w_row = &data[c * n..];
                 for j in 0..n {
-                    let w_byte = w_row[j * k_bytes];
+                    let w_byte = w_row[j];
                     let match_mask = !(in_byte ^ w_byte);
                     out_row[j] += 2.0 * lut[match_mask as usize] - mag_total;
                 }
@@ -243,25 +247,27 @@ fn fused_bit1_matmul_single_scale_fallback(
                         let mut w3 = 0u8;
                         for off in 0..nbits {
                             let bit_pos = kk + chunk_start + off;
-                            let idx0 = j * k + bit_pos;
-                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                            let c = bit_pos / 8;
+                            let b = bit_pos % 8;
+                            let byte0 = c * n + j;
+                            if (data[byte0] >> b) & 1 == 1 {
                                 w0 |= 1 << off;
                             }
                             if rem > 1 {
-                                let idx1 = (j + 1) * k + bit_pos;
-                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                let byte1 = c * n + (j + 1);
+                                if (data[byte1] >> b) & 1 == 1 {
                                     w1 |= 1 << off;
                                 }
                             }
                             if rem > 2 {
-                                let idx2 = (j + 2) * k + bit_pos;
-                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                let byte2 = c * n + (j + 2);
+                                if (data[byte2] >> b) & 1 == 1 {
                                     w2 |= 1 << off;
                                 }
                             }
                             if rem > 3 {
-                                let idx3 = (j + 3) * k + bit_pos;
-                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                let byte3 = c * n + (j + 3);
+                                if (data[byte3] >> b) & 1 == 1 {
                                     w3 |= 1 << off;
                                 }
                             }
@@ -329,9 +335,10 @@ fn fused_bit1_matmul_grouped(
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for t in 0..k {
-                    let idx = j * k + t;
+                    let c = t / 8;
+                    let b = t % 8;
                     let w_scale = weight.scales[t / gs];
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         w_scale
                     } else {
                         -w_scale
@@ -394,9 +401,10 @@ fn fused_bit1_matmul_grouped_aligned(
                 }
                 let mag_total = lut[255];
 
-                let w_row = &data[c..];
+                // Weight data is chunk-major: byte c of neuron j is at data[c*n + j].
+                let w_row = &data[c * n..];
                 for j in 0..n {
-                    let w_byte = w_row[j * k_bytes];
+                    let w_byte = w_row[j];
                     let match_mask = !(in_byte ^ w_byte);
                     out_row[j] += w_scale * (2.0 * lut[match_mask as usize] - mag_total);
                 }
@@ -468,25 +476,27 @@ fn fused_bit1_matmul_grouped_fallback(
                         let mut w3 = 0u8;
                         for off in 0..nbits {
                             let bit_pos = kk + chunk_start + off;
-                            let idx0 = j * k + bit_pos;
-                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                            let c = bit_pos / 8;
+                            let b = bit_pos % 8;
+                            let byte0 = c * n + j;
+                            if (data[byte0] >> b) & 1 == 1 {
                                 w0 |= 1 << off;
                             }
                             if rem > 1 {
-                                let idx1 = (j + 1) * k + bit_pos;
-                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                let byte1 = c * n + (j + 1);
+                                if (data[byte1] >> b) & 1 == 1 {
                                     w1 |= 1 << off;
                                 }
                             }
                             if rem > 2 {
-                                let idx2 = (j + 2) * k + bit_pos;
-                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                let byte2 = c * n + (j + 2);
+                                if (data[byte2] >> b) & 1 == 1 {
                                     w2 |= 1 << off;
                                 }
                             }
                             if rem > 3 {
-                                let idx3 = (j + 3) * k + bit_pos;
-                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                let byte3 = c * n + (j + 3);
+                                if (data[byte3] >> b) & 1 == 1 {
                                     w3 |= 1 << off;
                                 }
                             }
@@ -547,14 +557,98 @@ pub fn fused_bit1_int8_matmul(
     n: usize,
 ) {
     if weight.scales.len() == 1 {
-        fused_bit1_int8_matmul_single_scale(input, weight, out, m, k, n);
+        if k.is_multiple_of(8) {
+            fused_bit1_int8_matmul_single_scale_aligned(input, weight, out, m, k, n);
+        } else {
+            fused_bit1_int8_matmul_single_scale_fallback(input, weight, out, m, k, n);
+        }
+    } else if k.is_multiple_of(8) {
+        fused_bit1_int8_matmul_grouped_aligned(input, weight, out, m, k, n);
     } else {
-        fused_bit1_int8_matmul_grouped(input, weight, out, m, k, n);
+        fused_bit1_int8_matmul_grouped_fallback(input, weight, out, m, k, n);
     }
 }
 
-/// Single global scale variant of [`fused_bit1_int8_matmul`].
-fn fused_bit1_int8_matmul_single_scale(
+/// Fast byte-aligned path for [`fused_bit1_int8_matmul_single_scale`].
+fn fused_bit1_int8_matmul_single_scale_aligned(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    _m: usize,
+    k: usize,
+    n: usize,
+) {
+    let data = &weight.data;
+    let w_scale = weight.scales[0];
+    let k_bytes = k / 8;
+
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            let mut max_abs = 0.0f32;
+            for a in in_row.iter().take(k).map(|v| v.abs()) {
+                if a > max_abs {
+                    max_abs = a;
+                }
+            }
+            let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
+            let inv_scale = 1.0 / act_scale;
+
+            let mut acc = vec![0i32; n];
+
+            for c in 0..k_bytes {
+                let chunk_start = c * 8;
+
+                let mut in_byte = 0u8;
+                let mut mag = [0i32; 8];
+                for off in 0..8 {
+                    let v = in_row[chunk_start + off] * inv_scale;
+                    let q = (v.round() as i32).clamp(-127, 127);
+                    if q > 0 {
+                        in_byte |= 1 << off;
+                    }
+                    mag[off] = q.abs();
+                }
+
+                let mut lut = [0i32; 256];
+                for off in 0..8 {
+                    let step = 1 << off;
+                    for mask in (step..256).rev() {
+                        if (mask & step) != 0 {
+                            lut[mask] = lut[mask ^ step] + mag[off];
+                        }
+                    }
+                }
+                let mag_total = lut[255];
+
+                let w_row = &data[c * n..];
+                for j in 0..n {
+                    let match_mask = !(in_byte ^ w_row[j]);
+                    acc[j] += 2 * lut[match_mask as usize] - mag_total;
+                }
+            }
+
+            let scale = act_scale * w_scale;
+            for j in 0..n {
+                out_row[j] = acc[j] as f32 * scale;
+            }
+
+            apply_outlier_correction(
+                out_row,
+                in_row,
+                weight,
+                1,
+                k,
+                n,
+                Some(act_scale),
+                Some(inv_scale),
+            );
+        });
+}
+
+/// Reference bit-extraction path for [`fused_bit1_int8_matmul_single_scale`].
+fn fused_bit1_int8_matmul_single_scale_fallback(
     input: &[f32],
     weight: &QuantizedTensor,
     out: &mut [f32],
@@ -632,25 +726,27 @@ fn fused_bit1_int8_matmul_single_scale(
                         let mut w3 = 0u8;
                         for off in 0..nbits {
                             let bit_pos = kk + chunk_start + off;
-                            let idx0 = j * k + bit_pos;
-                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                            let c = bit_pos / 8;
+                            let b = bit_pos % 8;
+                            let byte0 = c * n + j;
+                            if (data[byte0] >> b) & 1 == 1 {
                                 w0 |= 1 << off;
                             }
                             if rem > 1 {
-                                let idx1 = (j + 1) * k + bit_pos;
-                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                let byte1 = c * n + (j + 1);
+                                if (data[byte1] >> b) & 1 == 1 {
                                     w1 |= 1 << off;
                                 }
                             }
                             if rem > 2 {
-                                let idx2 = (j + 2) * k + bit_pos;
-                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                let byte2 = c * n + (j + 2);
+                                if (data[byte2] >> b) & 1 == 1 {
                                     w2 |= 1 << off;
                                 }
                             }
                             if rem > 3 {
-                                let idx3 = (j + 3) * k + bit_pos;
-                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                let byte3 = c * n + (j + 3);
+                                if (data[byte3] >> b) & 1 == 1 {
                                     w3 |= 1 << off;
                                 }
                             }
@@ -695,13 +791,95 @@ fn fused_bit1_int8_matmul_single_scale(
         });
 }
 
-/// Group-wise scale variant of [`fused_bit1_int8_matmul`].
+/// Fast byte-aligned path for [`fused_bit1_int8_matmul_grouped`].
+fn fused_bit1_int8_matmul_grouped_aligned(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    _m: usize,
+    k: usize,
+    n: usize,
+) {
+    let data = &weight.data;
+    let gs = weight.config.group_size;
+    assert!(
+        gs > 0 && gs.is_multiple_of(8),
+        "grouped kernels require a multiple-of-8 group_size"
+    );
+    let k_bytes = k / 8;
+
+    out.fill(0.0);
+
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            let mut max_abs = 0.0f32;
+            for a in in_row.iter().take(k).map(|v| v.abs()) {
+                if a > max_abs {
+                    max_abs = a;
+                }
+            }
+            let act_scale = if max_abs == 0.0 { 1.0 } else { max_abs / 127.0 };
+            let inv_scale = 1.0 / act_scale;
+
+            for c in 0..k_bytes {
+                let chunk_start = c * 8;
+                let w_scale = weight.scales[chunk_start / gs];
+
+                let mut in_byte = 0u8;
+                let mut mag = [0i32; 8];
+                for off in 0..8 {
+                    let v = in_row[chunk_start + off] * inv_scale;
+                    let q = (v.round() as i32).clamp(-127, 127);
+                    if q > 0 {
+                        in_byte |= 1 << off;
+                    }
+                    mag[off] = q.abs();
+                }
+
+                let mut lut = [0i32; 256];
+                for off in 0..8 {
+                    let step = 1 << off;
+                    for mask in (step..256).rev() {
+                        if (mask & step) != 0 {
+                            lut[mask] = lut[mask ^ step] + mag[off];
+                        }
+                    }
+                }
+                let mag_total = lut[255];
+
+                let w_row = &data[c * n..];
+                for j in 0..n {
+                    let match_mask = !(in_byte ^ w_row[j]);
+                    out_row[j] += w_scale * (2 * lut[match_mask as usize] - mag_total) as f32;
+                }
+            }
+
+            for o in out_row.iter_mut().take(n) {
+                *o *= act_scale;
+            }
+
+            apply_outlier_correction(
+                out_row,
+                in_row,
+                weight,
+                1,
+                k,
+                n,
+                Some(act_scale),
+                Some(inv_scale),
+            );
+        });
+}
+
+/// Reference bit-extraction path for [`fused_bit1_int8_matmul_grouped`].
 ///
 /// The integer dot product accumulates in `i32` per scale group; whenever the
 /// `k`-index crosses into a new group the previous group's accumulator is
 /// flushed into the f32 output row with that group's scale. The activation
 /// scale is applied once at the end of the row.
-fn fused_bit1_int8_matmul_grouped(
+fn fused_bit1_int8_matmul_grouped_fallback(
     input: &[f32],
     weight: &QuantizedTensor,
     out: &mut [f32],
@@ -792,25 +970,27 @@ fn fused_bit1_int8_matmul_grouped(
                         let mut w3 = 0u8;
                         for off in 0..nbits {
                             let bit_pos = kk + chunk_start + off;
-                            let idx0 = j * k + bit_pos;
-                            if (data[idx0 / 8] >> (idx0 % 8)) & 1 == 1 {
+                            let c = bit_pos / 8;
+                            let b = bit_pos % 8;
+                            let byte0 = c * n + j;
+                            if (data[byte0] >> b) & 1 == 1 {
                                 w0 |= 1 << off;
                             }
                             if rem > 1 {
-                                let idx1 = (j + 1) * k + bit_pos;
-                                if (data[idx1 / 8] >> (idx1 % 8)) & 1 == 1 {
+                                let byte1 = c * n + (j + 1);
+                                if (data[byte1] >> b) & 1 == 1 {
                                     w1 |= 1 << off;
                                 }
                             }
                             if rem > 2 {
-                                let idx2 = (j + 2) * k + bit_pos;
-                                if (data[idx2 / 8] >> (idx2 % 8)) & 1 == 1 {
+                                let byte2 = c * n + (j + 2);
+                                if (data[byte2] >> b) & 1 == 1 {
                                     w2 |= 1 << off;
                                 }
                             }
                             if rem > 3 {
-                                let idx3 = (j + 3) * k + bit_pos;
-                                if (data[idx3 / 8] >> (idx3 % 8)) & 1 == 1 {
+                                let byte3 = c * n + (j + 3);
+                                if (data[byte3] >> b) & 1 == 1 {
                                     w3 |= 1 << off;
                                 }
                             }
@@ -880,8 +1060,9 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f32;
                 for t in 0..k {
-                    let idx = j * k + t;
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let c = t / 8;
+                    let b = t % 8;
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         scale
                     } else {
                         -scale
@@ -1013,8 +1194,9 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f64;
                 for t in 0..k {
-                    let idx = j * k + t;
-                    let bit = (w_q.data[idx / 8] >> (idx % 8)) & 1;
+                    let c = t / 8;
+                    let b = t % 8;
+                    let bit = (w_q.data[c * n + j] >> b) & 1;
                     let w = if bit == 1 { inv_scale_s } else { -inv_scale_s };
                     let q = (input_data[i * k + t] * inv_scale).round() as i32;
                     let q = q.clamp(-127, 127);
@@ -1027,7 +1209,8 @@ mod tests {
                         let jj = (*idx as usize) / k;
                         if jj == j {
                             let t = (*idx as usize) % k;
-                            let bit = (w_q.data[(*idx as usize) / 8] >> (t % 8)) & 1;
+                            let c = t / 8;
+                            let bit = (w_q.data[c * n + jj] >> (t % 8)) & 1;
                             let sign = if bit == 1 { inv_scale_s } else { -inv_scale_s };
                             let q = (input_data[i * k + t] * inv_scale).round() as i32;
                             let q = q.clamp(-127, 127);
@@ -1215,8 +1398,9 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f64;
                 for t in 0..k {
-                    let idx = j * k + t;
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let c = t / 8;
+                    let b = t % 8;
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         w_scale
                     } else {
                         -w_scale
@@ -1369,10 +1553,11 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f64;
                 for t in 0..k {
-                    let idx = j * k + t;
+                    let c = t / 8;
+                    let b = t % 8;
                     let g = t / gs;
                     let scale = weight.scales[g];
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         scale
                     } else {
                         -scale
@@ -1389,7 +1574,8 @@ mod tests {
                 let t = (*idx as usize) % k;
                 let g = t / gs;
                 let scale = weight.scales[g];
-                let bit = (data[(*idx as usize) / 8] >> (t % 8)) & 1;
+                let c = t / 8;
+                let bit = (data[c * n + j] >> (t % 8)) & 1;
                 let sign_val = if bit == 1 { scale } else { -scale };
                 let correction = exact_val - sign_val;
                 for row in 0..m {
@@ -1420,10 +1606,11 @@ mod tests {
             for j in 0..n {
                 let mut sum = 0.0f64;
                 for t in 0..k {
-                    let idx = j * k + t;
+                    let c = t / 8;
+                    let b = t % 8;
                     let g = t / gs;
                     let scale = weight.scales[g];
-                    let w = if (data[idx / 8] >> (idx % 8)) & 1 == 1 {
+                    let w = if (data[c * n + j] >> b) & 1 == 1 {
                         scale
                     } else {
                         -scale
@@ -1441,7 +1628,8 @@ mod tests {
                 let t = (*idx as usize) % k;
                 let g = t / gs;
                 let scale = weight.scales[g];
-                let bit = (data[(*idx as usize) / 8] >> (t % 8)) & 1;
+                let c = t / 8;
+                let bit = (data[c * n + j] >> (t % 8)) & 1;
                 let sign_val = if bit == 1 { scale } else { -scale };
                 let correction = exact_val - sign_val;
                 for row in 0..m {
