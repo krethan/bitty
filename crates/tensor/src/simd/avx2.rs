@@ -584,50 +584,92 @@ pub fn f32_silu_mul(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
 }
 
-#[target_feature(enable = "avx2,fma,popcnt")]
-unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize) {
-    let chunks_32 = n / 32;
-    let remainder = n % 32;
+#[target_feature(enable = "avx2")]
+unsafe fn xnor_popcount_2bit_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize) {
+    // For each 4-bit nibble, the low 2 bits are the first 2-bit element and the
+    // high 2 bits are the second.  The LUTs produce a 4-bit mask: bit j = 1 iff
+    // element j of the nibble is +1 (01) or -1 (10).
+    const LUT_01_LO: [u8; 16] = [
+        0x00, 0x01, 0x00, 0x00, 0x02, 0x03, 0x02, 0x02,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    ];
+    const LUT_01_HI: [u8; 16] = [
+        0x00, 0x04, 0x00, 0x00, 0x08, 0x0C, 0x08, 0x08,
+        0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
+    ];
+    const LUT_10_LO: [u8; 16] = [
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x02, 0x02, 0x03, 0x02, 0x00, 0x00, 0x01, 0x00,
+    ];
+    const LUT_10_HI: [u8; 16] = [
+        0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x04, 0x00,
+        0x08, 0x08, 0x0C, 0x08, 0x00, 0x00, 0x04, 0x00,
+    ];
 
-    for i in 0..chunks_32 {
-        let byte_idx = i * 4;
+    let lut_01_lo = _mm256_broadcastsi128_si256(_mm_loadu_si128(LUT_01_LO.as_ptr() as *const __m128i));
+    let lut_01_hi = _mm256_broadcastsi128_si256(_mm_loadu_si128(LUT_01_HI.as_ptr() as *const __m128i));
+    let lut_10_lo = _mm256_broadcastsi128_si256(_mm_loadu_si128(LUT_10_LO.as_ptr() as *const __m128i));
+    let lut_10_hi = _mm256_broadcastsi128_si256(_mm_loadu_si128(LUT_10_HI.as_ptr() as *const __m128i));
+
+    let low_nibble_mask = _mm256_set1_epi8(0x0F);
+    // Multipliers for _mm256_maddubs_epi16: (1, 16) per byte pair.
+    let mul_1_16 = _mm256_set1_epi16(0x1001);
+    let pack_shuffle = _mm256_setr_epi8(
+        0, 2, 4, 6, 8, 10, 12, 14, -1, -1, -1, -1, -1, -1, -1, -1,
+        0, 2, 4, 6, 8, 10, 12, 14, -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+
+    let chunks = n / 128;
+
+    for i in 0..chunks {
+        let byte_idx = i * 32;
         let va = _mm256_loadu_si256(a.add(byte_idx) as *const __m256i);
         let vb = _mm256_loadu_si256(b.add(byte_idx) as *const __m256i);
-        let xnor = _mm256_andnot_si256(_mm256_xor_si256(va, vb), _mm256_set1_epi8(-1i8));
 
-        let lo128 = _mm256_castsi256_si128(xnor);
-        let hi128 = _mm256_extracti128_si256::<1>(xnor);
+        let va_lo = _mm256_and_si256(va, low_nibble_mask);
+        let va_hi = _mm256_and_si256(_mm256_srli_epi16(va, 4), low_nibble_mask);
+        let m01_a = _mm256_or_si256(
+            _mm256_shuffle_epi8(lut_01_lo, va_lo),
+            _mm256_shuffle_epi8(lut_01_hi, va_hi),
+        );
+        let m10_a = _mm256_or_si256(
+            _mm256_shuffle_epi8(lut_10_lo, va_lo),
+            _mm256_shuffle_epi8(lut_10_hi, va_hi),
+        );
 
-        let lo32 = _mm_cvtsi128_si32(lo128) as u32;
-        let mid_lo32 = (_mm_extract_epi32::<1>(lo128)) as u32;
-        let mid_hi32 = _mm_cvtsi128_si32(hi128) as u32;
-        let hi32 = (_mm_extract_epi32::<1>(hi128)) as u32;
+        let vb_lo = _mm256_and_si256(vb, low_nibble_mask);
+        let vb_hi = _mm256_and_si256(_mm256_srli_epi16(vb, 4), low_nibble_mask);
+        let m01_b = _mm256_or_si256(
+            _mm256_shuffle_epi8(lut_01_lo, vb_lo),
+            _mm256_shuffle_epi8(lut_01_hi, vb_hi),
+        );
+        let m10_b = _mm256_or_si256(
+            _mm256_shuffle_epi8(lut_10_lo, vb_lo),
+            _mm256_shuffle_epi8(lut_10_hi, vb_hi),
+        );
 
-        let pop0 = lo32.count_ones() as u8;
-        let pop1 = mid_lo32.count_ones() as u8;
-        let pop2 = mid_hi32.count_ones() as u8;
-        let pop3 = hi32.count_ones() as u8;
+        let same_01 = _mm256_and_si256(m01_a, m01_b);
+        let same_10 = _mm256_and_si256(m10_a, m10_b);
+        let mask4 = _mm256_and_si256(_mm256_or_si256(same_01, same_10), low_nibble_mask);
 
-        let packed = pop0 | (pop1 << 4);
-        let packed2 = pop2 | (pop3 << 4);
-        *out.add(i * 2) = packed;
-        *out.add(i * 2 + 1) = packed2;
+        // Pack pairs of 4-bit masks into bytes.
+        let packed16 = _mm256_maddubs_epi16(mask4, mul_1_16);
+        let shuffled = _mm256_shuffle_epi8(packed16, pack_shuffle);
+        let lo = _mm256_castsi256_si128(shuffled);
+        let hi = _mm256_extracti128_si256::<1>(shuffled);
+
+        // Only the low 8 bytes of each lane contain useful data.
+        _mm_storel_epi64(out.add(i * 16) as *mut __m128i, lo);
+        _mm_storel_epi64(out.add(i * 16 + 8) as *mut __m128i, hi);
     }
 
-    let offset = chunks_32 * 32;
-    for i in 0..remainder {
-        let byte_a = *a.add(offset + i / 2);
-        let byte_b = *b.add(offset + i / 2);
-        let bits_a = if i % 2 == 0 {
-            byte_a & 0x03
-        } else {
-            (byte_a >> 4) & 0x03
-        };
-        let bits_b = if i % 2 == 0 {
-            byte_b & 0x03
-        } else {
-            (byte_b >> 4) & 0x03
-        };
+    let offset = chunks * 128;
+    for i in offset..n {
+        let byte_a = *a.add(i / 4);
+        let byte_b = *b.add(i / 4);
+        let shift = (i % 4) * 2;
+        let bits_a = (byte_a >> shift) & 0x03;
+        let bits_b = (byte_b >> shift) & 0x03;
 
         let w_a: f32 = match bits_a {
             0x01 => 1.0,
@@ -641,10 +683,10 @@ unsafe fn xnor_popcount_avx2(a: *const u8, b: *const u8, out: *mut u8, n: usize)
         };
 
         if i % 8 == 0 {
-            *out.add((offset + i) / 8) = 0;
+            *out.add(i / 8) = 0;
         }
         if w_a * w_b > 0.0 {
-            *out.add((offset + i) / 8) |= 1 << (i % 8);
+            *out.add(i / 8) |= 1 << (i % 8);
         }
     }
 }
@@ -957,18 +999,25 @@ pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usi
             popcounts[i] = (!a[i] ^ b[i]).count_ones();
         }
     }
+
+    // Mask out bits beyond n_bits in the last byte.
+    let rem = n_bits % 8;
+    if rem != 0 {
+        let mask = (1u8 << rem) - 1;
+        popcounts[n_bytes - 1] =
+            ((!a[n_bytes - 1] ^ b[n_bytes - 1]) & mask).count_ones();
+    }
 }
 
-/// AVX2 per-byte popcount using VPSHUFB lookup table + nibble masking.
-/// Stores byte-sized popcounts (0..8) widened to u32.
+/// AVX2 per-byte popcount using VPSHUFB nibble LUT.
+/// Each 32 input bytes produce 32 byte popcounts (widened to u32).
 #[target_feature(enable = "avx2")]
 unsafe fn xnor_popcount_1bit_avx2(a: *const u8, b: *const u8, popcounts: *mut u32, n_bytes: usize) {
-    // Lookup table: low nibble popcount {0..15}
-    let lookup = _mm256_setr_epi8(
-        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3,
-        3, 4,
-    );
+    let lut = _mm256_broadcastsi128_si256(_mm_setr_epi8(
+        0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4,
+    ));
     let low_mask = _mm256_set1_epi8(0x0F);
+    let all_ones = _mm256_set1_epi8(-1);
 
     let chunks = n_bytes / 32;
 
@@ -976,28 +1025,32 @@ unsafe fn xnor_popcount_1bit_avx2(a: *const u8, b: *const u8, popcounts: *mut u3
         let byte_idx = i * 32;
         let va = _mm256_loadu_si256(a.add(byte_idx) as *const __m256i);
         let vb = _mm256_loadu_si256(b.add(byte_idx) as *const __m256i);
-        // XNOR = NOT(XOR(a, b)) — matching bits become 1
-        let xnor = _mm256_andnot_si256(_mm256_xor_si256(va, vb), _mm256_set1_epi8(-1i8));
+        // XNOR = NOT(XOR(a, b)) — matching bits become 1.
+        let xnor = _mm256_andnot_si256(_mm256_xor_si256(va, vb), all_ones);
 
-        // VPSHUFB lookup: low nibble popcount
         let lo = _mm256_and_si256(xnor, low_mask);
         let hi = _mm256_and_si256(_mm256_srli_epi16(xnor, 4), low_mask);
-        let pop_lo = _mm256_shuffle_epi8(lookup, lo);
-        let pop_hi = _mm256_shuffle_epi8(lookup, hi);
-        let counts = _mm256_add_epi8(pop_lo, pop_hi);
+        let counts = _mm256_add_epi8(_mm256_shuffle_epi8(lut, lo), _mm256_shuffle_epi8(lut, hi));
 
-        // Widen each byte to u32 and store
-        let counts_lo = _mm256_unpacklo_epi8(counts, _mm256_setzero_si256());
-        let counts_hi = _mm256_unpackhi_epi8(counts, _mm256_setzero_si256());
-        let counts_0 = _mm256_unpacklo_epi16(counts_lo, _mm256_setzero_si256());
-        let counts_1 = _mm256_unpackhi_epi16(counts_lo, _mm256_setzero_si256());
-        let counts_2 = _mm256_unpacklo_epi16(counts_hi, _mm256_setzero_si256());
-        let counts_3 = _mm256_unpackhi_epi16(counts_hi, _mm256_setzero_si256());
+        let lo128 = _mm256_castsi256_si128(counts);
+        let hi128 = _mm256_extracti128_si256::<1>(counts);
 
-        _mm256_storeu_si256(popcounts.add(byte_idx) as *mut __m256i, counts_0);
-        _mm256_storeu_si256(popcounts.add(byte_idx + 8) as *mut __m256i, counts_1);
-        _mm256_storeu_si256(popcounts.add(byte_idx + 16) as *mut __m256i, counts_2);
-        _mm256_storeu_si256(popcounts.add(byte_idx + 24) as *mut __m256i, counts_3);
+        _mm256_storeu_si256(
+            popcounts.add(byte_idx) as *mut __m256i,
+            _mm256_cvtepu8_epi32(lo128),
+        );
+        _mm256_storeu_si256(
+            popcounts.add(byte_idx + 8) as *mut __m256i,
+            _mm256_cvtepu8_epi32(_mm_srli_si128(lo128, 8)),
+        );
+        _mm256_storeu_si256(
+            popcounts.add(byte_idx + 16) as *mut __m256i,
+            _mm256_cvtepu8_epi32(hi128),
+        );
+        _mm256_storeu_si256(
+            popcounts.add(byte_idx + 24) as *mut __m256i,
+            _mm256_cvtepu8_epi32(_mm_srli_si128(hi128, 8)),
+        );
     }
 
     let offset = chunks * 32;
@@ -1007,22 +1060,15 @@ unsafe fn xnor_popcount_1bit_avx2(a: *const u8, b: *const u8, popcounts: *mut u3
 }
 
 pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
-    if is_x86_feature_detected!("avx2") && n >= 32 {
-        unsafe { xnor_popcount_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n) };
+    if is_x86_feature_detected!("avx2") && n >= 128 {
+        unsafe { xnor_popcount_2bit_avx2(a.as_ptr(), b.as_ptr(), out.as_mut_ptr(), n) };
     } else {
         for i in 0..n {
-            let byte_a = a[i / 2];
-            let byte_b = b[i / 2];
-            let bits_a = if i % 2 == 0 {
-                byte_a & 0x03
-            } else {
-                (byte_a >> 4) & 0x03
-            };
-            let bits_b = if i % 2 == 0 {
-                byte_b & 0x03
-            } else {
-                (byte_b >> 4) & 0x03
-            };
+            let byte_a = a[i / 4];
+            let byte_b = b[i / 4];
+            let shift = (i % 4) * 2;
+            let bits_a = (byte_a >> shift) & 0x03;
+            let bits_b = (byte_b >> shift) & 0x03;
             let w_a: f32 = match bits_a {
                 0x01 => 1.0,
                 0x02 => -1.0,
@@ -1040,5 +1086,12 @@ pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
                 out[i / 8] |= 1 << (i % 8);
             }
         }
+    }
+
+    // Mask out bits beyond n in the last output byte.
+    let rem = n % 8;
+    if rem != 0 {
+        let mask = (1u8 << rem) - 1;
+        out[n / 8] &= mask;
     }
 }

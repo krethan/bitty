@@ -226,22 +226,22 @@ pub fn xnor_popcount_1bit(a: &[u8], b: &[u8], popcounts: &mut [u32], n_bits: usi
     for i in 0..n_bytes {
         popcounts[i] = (!a[i] ^ b[i]).count_ones();
     }
+    // Mask out bits beyond n_bits in the last byte.
+    let rem = n_bits % 8;
+    if rem != 0 {
+        let mask = (1u8 << rem) - 1;
+        popcounts[n_bytes - 1] =
+            ((!a[n_bytes - 1] ^ b[n_bytes - 1]) & mask).count_ones();
+    }
 }
 
 pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
     for i in 0..n {
-        let byte_a = a[i / 2];
-        let byte_b = b[i / 2];
-        let bits_a = if i % 2 == 0 {
-            byte_a & 0x03
-        } else {
-            (byte_a >> 4) & 0x03
-        };
-        let bits_b = if i % 2 == 0 {
-            byte_b & 0x03
-        } else {
-            (byte_b >> 4) & 0x03
-        };
+        let byte_a = a[i / 4];
+        let byte_b = b[i / 4];
+        let shift = (i % 4) * 2;
+        let bits_a = (byte_a >> shift) & 0x03;
+        let bits_b = (byte_b >> shift) & 0x03;
 
         let w_a: f32 = match bits_a {
             0x01 => 1.0,
@@ -261,6 +261,13 @@ pub fn xnor_popcount_2bit(a: &[u8], b: &[u8], out: &mut [u8], n: usize) {
         if dot > 0.0 {
             out[i / 8] |= 1 << (i % 8);
         }
+    }
+
+    // Mask out bits beyond n in the last output byte.
+    let rem = n % 8;
+    if rem != 0 {
+        let mask = (1u8 << rem) - 1;
+        out[n / 8] &= mask;
     }
 }
 
