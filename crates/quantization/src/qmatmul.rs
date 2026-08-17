@@ -83,7 +83,6 @@ fn fused_bit1_matmul_single_scale(
     k: usize,
     n: usize,
 ) {
-    const KB: usize = 128;
     let data = &weight.data;
 
     // Fast path for tiny matrices (avoids LUT overhead)
@@ -108,27 +107,107 @@ fn fused_bit1_matmul_single_scale(
         return;
     }
 
+    // When k is a multiple of 8 the packed weights for each 8-element chunk are
+    // byte-aligned per output neuron, so we can load whole bytes directly.
+    // Otherwise fall back to the bit-extraction path (used only for tests / odd
+    // sizes; transformer dims are always multiples of 8).
+    if k.is_multiple_of(8) {
+        fused_bit1_matmul_single_scale_aligned(input, weight, out, m, k, n);
+    } else {
+        fused_bit1_matmul_single_scale_fallback(input, weight, out, m, k, n);
+    }
+}
+
+/// Fast byte-aligned path for [`fused_bit1_matmul_single_scale`].
+fn fused_bit1_matmul_single_scale_aligned(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    let data = &weight.data;
+    let w_scale = weight.scales[0];
+    let k_bytes = k / 8;
+    out.fill(0.0);
+
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            for c in 0..k_bytes {
+                let chunk_start = c * 8;
+
+                // Pack input signs and collect magnitudes for this chunk.
+                let mut in_byte = 0u8;
+                let mut mag = [0.0f32; 8];
+                for off in 0..8 {
+                    let val = in_row[chunk_start + off];
+                    if val > 0.0 {
+                        in_byte |= 1 << off;
+                    }
+                    mag[off] = val.abs();
+                }
+
+                // Build subset-sum LUT for this 8-element chunk.
+                let mut lut = [0.0f32; 256];
+                for off in 0..8 {
+                    let step = 1 << off;
+                    for mask in (step..256).rev() {
+                        if (mask & step) != 0 {
+                            lut[mask] = lut[mask ^ step] + mag[off];
+                        }
+                    }
+                }
+                let mag_total = lut[255];
+
+                let w_row = &data[c..];
+                for j in 0..n {
+                    let w_byte = w_row[j * k_bytes];
+                    let match_mask = !(in_byte ^ w_byte);
+                    out_row[j] += 2.0 * lut[match_mask as usize] - mag_total;
+                }
+            }
+
+            if w_scale != 1.0 {
+                for v in out_row.iter_mut() {
+                    *v *= w_scale;
+                }
+            }
+        });
+
+    apply_outlier_correction(out, input, weight, m, k, n, None, None);
+}
+
+/// Reference bit-extraction path for [`fused_bit1_matmul_single_scale`].
+/// Correct for any k, but slower because it extracts individual weight bits.
+fn fused_bit1_matmul_single_scale_fallback(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    const KB: usize = 128;
+    let data = &weight.data;
     let w_scale = weight.scales[0];
     out.fill(0.0);
 
-    // Parallelize over input rows
-    let input_chunks = input.chunks(k);
-    let output_chunks = out.chunks_mut(n);
-
-    input_chunks
-        .zip(output_chunks)
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
         .for_each(|(in_row, out_row)| {
             let mut kk = 0;
             while kk < k {
                 let kk_end = (kk + KB).min(k);
                 let kk_len = kk_end - kk;
 
-                // Process K-tile in groups of 8 elements
                 for chunk_start in (0..kk_len).step_by(8) {
                     let chunk_end = (chunk_start + 8).min(kk_len);
                     let nbits = chunk_end - chunk_start;
 
-                    // Pack input signs and compute magnitudes for this group
                     let mut in_byte = 0u8;
                     let mut mag = [0.0f32; 8];
                     let mut mag_total = 0.0f32;
@@ -142,8 +221,6 @@ fn fused_bit1_matmul_single_scale(
                         mag_total += abs_val;
                     }
 
-                    // Build LUT for this group: for each possible match mask (0..2^nbits-1),
-                    // lut[mask] = sum of mag[off] where the mask bit is 1
                     let nlut = 1usize << nbits;
                     let mut lut = [0.0f32; 256];
                     for (off, m) in mag.iter().enumerate().take(nbits) {
@@ -155,7 +232,6 @@ fn fused_bit1_matmul_single_scale(
                         }
                     }
 
-                    // Process up to 4 output neurons at once
                     let mut j = 0;
                     while j < n {
                         let rem = n - j;
@@ -191,7 +267,6 @@ fn fused_bit1_matmul_single_scale(
                             }
                         }
 
-                        // XNOR to find matching positions, then LUT-lookup the exact contribution
                         let chunk_mask = !0u8 >> (8 - nbits);
                         let match_mask0 = !(in_byte ^ w0) & chunk_mask;
                         out_row[j] += 2.0 * lut[match_mask0 as usize] - mag_total;
@@ -215,13 +290,13 @@ fn fused_bit1_matmul_single_scale(
 
                 kk = kk_end;
             }
-        });
 
-    if w_scale != 1.0 {
-        for v in out.iter_mut() {
-            *v *= w_scale;
-        }
-    }
+            if w_scale != 1.0 {
+                for v in out_row.iter_mut() {
+                    *v *= w_scale;
+                }
+            }
+        });
 
     apply_outlier_correction(out, input, weight, m, k, n, None, None);
 }
@@ -240,7 +315,6 @@ fn fused_bit1_matmul_grouped(
     k: usize,
     n: usize,
 ) {
-    const KB: usize = 128;
     let data = &weight.data;
     let gs = weight.config.group_size;
     assert!(
@@ -271,12 +345,83 @@ fn fused_bit1_matmul_grouped(
         return;
     }
 
-    // Parallelize over input rows
-    let input_chunks = input.chunks(k);
-    let output_chunks = out.chunks_mut(n);
+    if k.is_multiple_of(8) {
+        fused_bit1_matmul_grouped_aligned(input, weight, out, m, k, n);
+    } else {
+        fused_bit1_matmul_grouped_fallback(input, weight, out, m, k, n);
+    }
+}
 
-    input_chunks
-        .zip(output_chunks)
+/// Fast byte-aligned path for [`fused_bit1_matmul_grouped`].
+fn fused_bit1_matmul_grouped_aligned(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    let data = &weight.data;
+    let gs = weight.config.group_size;
+    let k_bytes = k / 8;
+
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
+        .for_each(|(in_row, out_row)| {
+            for c in 0..k_bytes {
+                let chunk_start = c * 8;
+                let w_scale = weight.scales[chunk_start / gs];
+
+                let mut in_byte = 0u8;
+                let mut mag = [0.0f32; 8];
+                for off in 0..8 {
+                    let val = in_row[chunk_start + off];
+                    if val > 0.0 {
+                        in_byte |= 1 << off;
+                    }
+                    mag[off] = val.abs();
+                }
+
+                let mut lut = [0.0f32; 256];
+                for off in 0..8 {
+                    let step = 1 << off;
+                    for mask in (step..256).rev() {
+                        if (mask & step) != 0 {
+                            lut[mask] = lut[mask ^ step] + mag[off];
+                        }
+                    }
+                }
+                let mag_total = lut[255];
+
+                let w_row = &data[c..];
+                for j in 0..n {
+                    let w_byte = w_row[j * k_bytes];
+                    let match_mask = !(in_byte ^ w_byte);
+                    out_row[j] += w_scale * (2.0 * lut[match_mask as usize] - mag_total);
+                }
+            }
+        });
+
+    apply_outlier_correction(out, input, weight, m, k, n, None, None);
+}
+
+/// Reference bit-extraction path for [`fused_bit1_matmul_grouped`].
+fn fused_bit1_matmul_grouped_fallback(
+    input: &[f32],
+    weight: &QuantizedTensor,
+    out: &mut [f32],
+    m: usize,
+    k: usize,
+    n: usize,
+) {
+    const KB: usize = 128;
+    let data = &weight.data;
+    let gs = weight.config.group_size;
+
+    input
+        .par_chunks(k)
+        .zip(out.par_chunks_mut(n))
         .for_each(|(in_row, out_row)| {
             let mut kk = 0;
             while kk < k {
