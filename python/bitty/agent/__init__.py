@@ -11,6 +11,9 @@ from bitty.memory import MemorySystem
 
 class BaseAgent:
     """Base class for all Bitty agents"""
+
+    # Tell pytest not to try to collect this as a test class.
+    __test__ = False
     
     def __init__(self, config: Config, memory: MemorySystem, logger: logging.Logger):
         self.config = config

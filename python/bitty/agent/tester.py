@@ -17,6 +17,8 @@ class TestResult:
     failures: List[str]
     coverage: float
 
+    __test__ = False
+
 
 class TesterAgent(BaseAgent):
     """Creates and runs tests on implementations"""
