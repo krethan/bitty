@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
   pull_request:
-    branches: [main]
+    branches: ["**"]
+  schedule:
+    # Weekly heavy checks (cargo-deny audit + release smoke bench) — Mondays 06:00 UTC.
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -38,8 +41,11 @@ jobs:
       - name: Run slow training tests
         run: cargo test -p bitllm-train -- --ignored
 
+      - name: Build decoupled hip_tern standalone
+        run: cargo build --manifest-path crates/hip_tern/Cargo.toml
+
   python:
-    name: Python (scaffold & smoke test)
+    name: Python (${{ matrix.python-version }} scaffold & tests)
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -54,10 +60,31 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
-        run: pip install -e ./python
+        run: pip install -e ./python[dev]
 
       - name: Compile check
         run: python -m py_compile python/bitty/*.py python/bitty/agent/*.py
 
+      - name: Run unit tests
+        working-directory: python
+        run: pytest -v
+
       - name: Smoke test CLI
         run: bitty --goal "Verify CI pipeline"
+
+  audit:
+    name: Audit dependencies (weekly)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Audit dependencies for known CVEs
+        run: cargo audit
