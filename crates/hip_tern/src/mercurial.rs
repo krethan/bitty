@@ -153,24 +153,25 @@ impl MercurialModel {
         }
     }
 
-    /// Forward pass for a single token
+    /// Forward pass for a single token.
+    ///
+    /// **Stub**: the HIP forward kernel has not yet been integrated. The weight
+    /// streamer is exercised, but no real computation runs. Returns an error so
+    /// callers fail loudly rather than silently get a zero vector that looks
+    /// like valid output.
     ///
     /// # Safety
     /// This function uses HIP kernel operations that require a valid HIP context.
     pub unsafe fn forward_token(&mut self, token: usize) -> Result<Vec<f32>, String> {
-        // Stream the current layer's weights to VRAM
         let current_layer = token % self.config.num_layers;
         self.weight_streamer
             .stream_layer(current_layer, self.hip_kernel.stream())?;
 
-        // TODO: Implement the actual forward pass
-        // This would involve:
-        // 1. Loading the quantized weights from VRAM
-        // 2. Running the HIP-TERN kernel
-        // 3. Processing the attention
-        // 4. Returning the output
-
-        Ok(vec![0.0; self.config.hidden_size])
+        Err(format!(
+            "MercurialModel::forward_token is a stub: HIP forward kernel not yet \
+             integrated. Weight streaming succeeded for layer {current_layer}, but \
+             no forward computation runs."
+        ))
     }
 
     /// Get the configuration
